@@ -13,19 +13,40 @@ export default async function handler(req, res) {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          contents: [{ parts: [{ text: prompt }] }],
-          generationConfig: { maxOutputTokens: max_tokens || 1200 }
+          contents: [{ role: "user", parts: [{ text: prompt }] }],
+          generationConfig: {
+            maxOutputTokens: max_tokens || 1200,
+            temperature: 0.7
+          }
         })
       }
     );
 
     const data = await response.json();
-    const text = data.candidates?.[0]?.content?.parts?.[0]?.text || "No report generated.";
 
-    // Return in same format the app expects
+    // Log full response to help debug
+    console.log("Gemini response:", JSON.stringify(data));
+
+    if (!response.ok) {
+      return res.status(response.status).json({ error: data.error || "Gemini API error" });
+    }
+
+    let text = "";
+    if (data.candidates && data.candidates.length > 0) {
+      const candidate = data.candidates[0];
+      if (candidate.content && candidate.content.parts && candidate.content.parts.length > 0) {
+        text = candidate.content.parts.map(function(p) { return p.text || ""; }).join("");
+      }
+    }
+
+    if (!text) {
+      return res.status(500).json({ error: "Empty response from Gemini. Raw: " + JSON.stringify(data) });
+    }
+
     res.status(200).json({
       content: [{ type: "text", text: text }]
     });
+
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
