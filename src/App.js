@@ -3,6 +3,36 @@ import { useState, useEffect } from "react";
 const DAY_NAMES = ["Sun","Mon","Tue","Wed","Thu","Fri","Sat"];
 const DAY_FULL = ["Sunday","Monday","Tuesday","Wednesday","Thursday","Friday","Saturday"];
 
+// Storage abstraction — uses window.storage (Claude) or localStorage (deployed)
+const store = {
+  async get(key) {
+    if (typeof window.storage !== "undefined") {
+      try { return await window.storage.get(key, true); } catch(e) {}
+    }
+    const val = localStorage.getItem(key);
+    return val ? { value: val } : null;
+  },
+  async set(key, value) {
+    if (typeof window.storage !== "undefined") {
+      try { await window.storage.set(key, value, true); return; } catch(e) {}
+    }
+    localStorage.setItem(key, value);
+  },
+  async delete(key) {
+    if (typeof window.storage !== "undefined") {
+      try { await window.storage.delete(key, true); return; } catch(e) {}
+    }
+    localStorage.removeItem(key);
+  },
+  async list(prefix) {
+    if (typeof window.storage !== "undefined") {
+      try { return await window.storage.list(prefix, true); } catch(e) {}
+    }
+    const keys = Object.keys(localStorage).filter(function(k) { return k.startsWith(prefix || ""); });
+    return { keys: keys };
+  }
+};
+
 function calcH(s, e) {
   const a = parseFloat(s), b = parseFloat(e);
   if (isNaN(a) || isNaN(b) || b < a) return null;
@@ -103,6 +133,7 @@ export default function App() {
   const [saving, setSaving] = useState({});
   const [savedReports, setSavedReports] = useState([]);
   const [selReport, setSelReport] = useState(null);
+  const [selMachine, setSelMachine] = useState(null);
 
   // Machine form
   const [editM, setEditM] = useState(null);
@@ -126,15 +157,15 @@ export default function App() {
   async function loadAll() {
     setAppLoading(true);
     try {
-      const mr = await window.storage.get("mht_machines", true);
+      const mr = await store.get("mht_machines");
       if (mr) setMachines(JSON.parse(mr.value));
     } catch(e) {}
     try {
-      const rl = await window.storage.list("mht_rpt:");
+      const rl = await store.list("mht_rpt:");
       if (rl && rl.keys && rl.keys.length) {
         const arr = [];
         for (let i = 0; i < rl.keys.length; i++) {
-          try { const r = await window.storage.get(rl.keys[i]); if (r) arr.push(JSON.parse(r.value)); } catch(e) {}
+          try { const r = await store.get(rl.keys[i]); if (r) arr.push(JSON.parse(r.value)); } catch(e) {}
         }
         arr.sort(function(a,b){return b.savedAt-a.savedAt;});
         setSavedReports(arr);
@@ -149,7 +180,7 @@ export default function App() {
       const m = machines[i];
       if (!m.active) continue;
       try {
-        const r = await window.storage.get("mht_e:" + m.id + ":" + dashDate, true);
+        const r = await store.get("mht_e:" + m.id + ":" + dashDate);
         ne[m.id] = r ? JSON.parse(r.value) : emptyEntry();
       } catch(e) { ne[m.id] = emptyEntry(); }
     }
@@ -157,7 +188,7 @@ export default function App() {
   }
 
   async function saveMachines(list) {
-    try { await window.storage.set("mht_machines", JSON.stringify(list), true); } catch(e) {}
+    try { await store.set("mht_machines", JSON.stringify(list)); } catch(e) {}
     setMachines(list);
   }
 
@@ -184,7 +215,7 @@ export default function App() {
   async function saveEntry(mid) {
     const e = dashEntries[mid]; if (!e) return;
     setSaving(function(p){return Object.assign({},p,{[mid]:true});});
-    try { await window.storage.set("mht_e:"+mid+":"+dashDate, JSON.stringify(Object.assign({},e,{date:dashDate,machineId:mid,savedAt:Date.now()})), true); } catch(er) {}
+    try { await store.set("mht_e:"+mid+":"+dashDate, JSON.stringify(Object.assign({},e,{date:dashDate,machineId:mid,savedAt:Date.now()}))); } catch(er) {}
     setSaving(function(p){return Object.assign({},p,{[mid]:false});});
   }
 
@@ -193,7 +224,7 @@ export default function App() {
     const cur = new Date(sd+"T12:00:00"), last = new Date(ed+"T12:00:00");
     while (cur <= last) {
       const ds = cur.toISOString().split("T")[0];
-      try { const r = await window.storage.get("mht_e:"+mid+":"+ds, true); if (r) res[ds]=JSON.parse(r.value); } catch(e) {}
+      try { const r = await store.get("mht_e:"+mid+":"+ds); if (r) res[ds]=JSON.parse(r.value); } catch(e) {}
       cur.setDate(cur.getDate()+1);
     }
     return res;
@@ -285,7 +316,7 @@ export default function App() {
       if (!text) { setRError("No report generated."); setRLoading(false); return; }
       setRResult(text);
       const entry={id:Date.now().toString(),savedAt:Date.now(),machineName:machine.name,machineId:machine.id,type:rType,startDate:sd,endDate:ed,report:text};
-      try { await window.storage.set("mht_rpt:"+entry.id, JSON.stringify(entry)); } catch(e) {}
+      try { await store.set("mht_rpt:"+entry.id, JSON.stringify(entry)); } catch(e) {}
       setSavedReports(function(prev){return [entry].concat(prev);});
     } catch(e) { setRError("Request failed: "+e.message); }
     setRLoading(false);
@@ -313,8 +344,8 @@ export default function App() {
 
   if (appLoading) return <div style={{padding:"2rem",textAlign:"center",color:"var(--color-text-secondary)",fontFamily:"var(--font-sans)"}}>Loading...</div>;
 
-  // ── DASHBOARD ──
-  if (view==="dashboard") {
+  // ── DASHBOARD — Machine List ──
+  if (view==="dashboard" && !selMachine) {
     const active = machines.filter(function(m){return m.active;});
     return (
       <div style={wrap}>
@@ -336,73 +367,110 @@ export default function App() {
         )}
 
         {active.map(function(m) {
-          const e=dashEntries[m.id]||emptyEntry();
-          const dh=e.noWork?null:calcH(e.dayStart,e.dayEnd);
-          const nh=e.noWork?null:calcH(e.nightStart,e.nightEnd);
-          const db=billH(dh),nb=billH(nh);
-          const tot=(dh!==null||nh!==null)?((dh||0)+(nh||0)):null;
-          const dErr=!e.noWork&&e.dayStart&&e.dayEnd&&parseFloat(e.dayEnd)<parseFloat(e.dayStart);
-          const nErr=!e.noWork&&e.nightStart&&e.nightEnd&&parseFloat(e.nightEnd)<parseFloat(e.nightStart);
+          const e = dashEntries[m.id] || emptyEntry();
+          const dh = e.noWork?null:calcH(e.dayStart,e.dayEnd);
+          const nh = e.noWork?null:calcH(e.nightStart,e.nightEnd);
+          const tot = (dh!==null||nh!==null) ? ((dh||0)+(nh||0)) : null;
+          const hasData = e.noWork || e.dayStart || e.dayEnd || e.nightStart || e.nightEnd;
           return (
-            <div key={m.id} style={card}>
-              <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:"0.75rem"}}>
-                <div>
-                  <span style={{fontSize:15,fontWeight:600,color:"var(--color-text-primary)"}}>{m.name}</span>
-                  <span style={{fontSize:11,color:"var(--color-text-tertiary)",marginLeft:8}}>{DAY_FULL[m.startDay]} → {DAY_FULL[m.breakDay]}</span>
-                </div>
+            <div key={m.id} onClick={function(){setSelMachine(m);}}
+              style={Object.assign({},card,{cursor:"pointer",display:"flex",justifyContent:"space-between",alignItems:"center"})}>
+              <div>
+                <div style={{fontSize:15,fontWeight:600,color:"var(--color-text-primary)"}}>{m.name}</div>
+                <div style={{fontSize:12,color:"var(--color-text-tertiary)",marginTop:2}}>{DAY_FULL[m.startDay]} → {DAY_FULL[m.breakDay]}</div>
+              </div>
+              <div style={{display:"flex",alignItems:"center",gap:8}}>
                 {e.noWork
                   ? <span style={{fontSize:12,background:"#FEE9E9",color:"#9B1C1C",padding:"2px 8px",borderRadius:4}}>No Work</span>
-                  : tot!==null && <span style={{fontSize:13,fontWeight:500,background:"var(--color-background-secondary)",padding:"2px 10px",borderRadius:6}}>{fmt(tot)}</span>}
-              </div>
-
-              {!e.noWork && (
-                <>
-                  <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 8px 1fr 1fr",gap:"5px 8px",marginBottom:4}}>
-                    <div style={{fontSize:11,color:"#A0752B",textAlign:"center",background:"#FDF3E1",borderRadius:4,padding:"2px 0"}}>☀ Day start</div>
-                    <div style={{fontSize:11,color:"#A0752B",textAlign:"center",background:"#FDF3E1",borderRadius:4,padding:"2px 0"}}>☀ Day end</div>
-                    <span/>
-                    <div style={{fontSize:11,color:"#4640A0",textAlign:"center",background:"#EEEDFE",borderRadius:4,padding:"2px 0"}}>☾ Night start</div>
-                    <div style={{fontSize:11,color:"#4640A0",textAlign:"center",background:"#EEEDFE",borderRadius:4,padding:"2px 0"}}>☾ Night end</div>
-                  </div>
-                  <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 8px 1fr 1fr",gap:"5px 8px"}}>
-                    <input type="text" inputMode="decimal" placeholder="0.0" value={e.dayStart} onChange={function(ev){setEF(m.id,"dayStart",ev.target.value);}} style={{width:"100%",boxSizing:"border-box",fontSize:13,borderColor:dErr?"var(--color-border-danger)":undefined}}/>
-                    <input type="text" inputMode="decimal" placeholder="0.0" value={e.dayEnd} onChange={function(ev){setEF(m.id,"dayEnd",ev.target.value);}} style={{width:"100%",boxSizing:"border-box",fontSize:13,borderColor:dErr?"var(--color-border-danger)":undefined}}/>
-                    <div style={{width:1,background:"var(--color-border-tertiary)",margin:"0 auto"}}/>
-                    <input type="text" inputMode="decimal" placeholder="0.0" value={e.nightStart} onChange={function(ev){setEF(m.id,"nightStart",ev.target.value);}} style={{width:"100%",boxSizing:"border-box",fontSize:13,borderColor:nErr?"var(--color-border-danger)":undefined}}/>
-                    <input type="text" inputMode="decimal" placeholder="0.0" value={e.nightEnd} onChange={function(ev){setEF(m.id,"nightEnd",ev.target.value);}} style={{width:"100%",boxSizing:"border-box",fontSize:13,borderColor:nErr?"var(--color-border-danger)":undefined}}/>
-                  </div>
-                  {(dh!==null||nh!==null) && (
-                    <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 8px 1fr 1fr",gap:"2px 8px",marginTop:3}}>
-                      <span style={{gridColumn:"1/3",fontSize:11,color:dErr?"var(--color-text-danger)":"var(--color-text-tertiary)"}}>
-                        {dErr?"end < start":dh!==null?("= "+fmt(dh)+" / "+db+"h billed"):""}
-                      </span>
-                      <span/>
-                      <span style={{gridColumn:"4/6",fontSize:11,color:nErr?"var(--color-text-danger)":"var(--color-text-tertiary)"}}>
-                        {nErr?"end < start":nh!==null?("= "+fmt(nh)+" / "+nb+"h billed"):""}
-                      </span>
-                    </div>
-                  )}
-                </>
-              )}
-
-              {e.noWork && (
-                <input type="text" placeholder="Reason (e.g. breakdown, holiday...)" value={e.reason}
-                  onChange={function(ev){setReason(m.id,ev.target.value);}}
-                  style={{width:"100%",boxSizing:"border-box",fontSize:13,marginBottom:4}}/>
-              )}
-
-              <div style={{display:"flex",gap:8,marginTop:"0.75rem"}}>
-                <button onClick={function(){saveEntry(m.id);}} style={{flex:1,padding:"7px",fontSize:13,fontWeight:500}}>
-                  {saving[m.id]===true?"Saving...":"Save Entry ✓"}
-                </button>
-                <button onClick={function(){toggleNW(m.id);}}
-                  style={{padding:"7px 12px",fontSize:12,background:e.noWork?"#FEE9E9":"var(--color-background-secondary)",color:e.noWork?"#9B1C1C":"var(--color-text-secondary)",border:"0.5px solid "+(e.noWork?"#FECACA":"var(--color-border-tertiary)"),borderRadius:6,cursor:"pointer"}}>
-                  {e.noWork?"Undo":"No work"}
-                </button>
+                  : hasData && tot!==null
+                    ? <span style={{fontSize:13,fontWeight:500,background:"#E1F5EE",color:"#0F6E56",padding:"2px 10px",borderRadius:6}}>{fmt(tot)}</span>
+                    : <span style={{fontSize:12,color:"var(--color-text-tertiary)"}}>No entry yet</span>}
+                <span style={{fontSize:16,color:"var(--color-text-tertiary)"}}>→</span>
               </div>
             </div>
           );
         })}
+      </div>
+    );
+  }
+
+  // ── DASHBOARD — Single Machine Entry ──
+  if (view==="dashboard" && selMachine) {
+    const m = selMachine;
+    const e = dashEntries[m.id] || emptyEntry();
+    const dh = e.noWork?null:calcH(e.dayStart,e.dayEnd);
+    const nh = e.noWork?null:calcH(e.nightStart,e.nightEnd);
+    const db = billH(dh), nb = billH(nh);
+    const tot = (dh!==null||nh!==null)?((dh||0)+(nh||0)):null;
+    const dErr = !e.noWork&&e.dayStart&&e.dayEnd&&parseFloat(e.dayEnd)<parseFloat(e.dayStart);
+    const nErr = !e.noWork&&e.nightStart&&e.nightEnd&&parseFloat(e.nightEnd)<parseFloat(e.nightStart);
+    return (
+      <div style={wrap}>
+        <Nav />
+        <div style={{display:"flex",alignItems:"center",gap:10,marginBottom:"1rem"}}>
+          <button onClick={function(){setSelMachine(null);}} style={{fontSize:13,padding:"5px 10px"}}>← Back</button>
+          <div>
+            <h2 style={{fontSize:18,fontWeight:600,margin:0,color:"var(--color-text-primary)"}}>{m.name}</h2>
+            <p style={{fontSize:13,color:"var(--color-text-secondary)",margin:"2px 0 0"}}>
+              {new Date(dashDate+"T12:00:00").toLocaleDateString("en-GB",{weekday:"long",day:"numeric",month:"long",year:"numeric"})}
+            </p>
+          </div>
+        </div>
+
+        <div style={{background:"var(--color-background-primary)",border:"0.5px solid var(--color-border-tertiary)",borderRadius:"var(--border-radius-lg)",padding:"1.25rem"}}>
+          {!e.noWork && (
+            <>
+              <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 8px 1fr 1fr",gap:"5px 8px",marginBottom:4}}>
+                <div style={{fontSize:11,color:"#A0752B",textAlign:"center",background:"#FDF3E1",borderRadius:4,padding:"2px 0"}}>☀ Day start</div>
+                <div style={{fontSize:11,color:"#A0752B",textAlign:"center",background:"#FDF3E1",borderRadius:4,padding:"2px 0"}}>☀ Day end</div>
+                <span/>
+                <div style={{fontSize:11,color:"#4640A0",textAlign:"center",background:"#EEEDFE",borderRadius:4,padding:"2px 0"}}>☾ Night start</div>
+                <div style={{fontSize:11,color:"#4640A0",textAlign:"center",background:"#EEEDFE",borderRadius:4,padding:"2px 0"}}>☾ Night end</div>
+              </div>
+              <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 8px 1fr 1fr",gap:"5px 8px"}}>
+                <input type="text" inputMode="decimal" placeholder="0.0" value={e.dayStart} onChange={function(ev){setEF(m.id,"dayStart",ev.target.value);}} style={{width:"100%",boxSizing:"border-box",fontSize:13,borderColor:dErr?"var(--color-border-danger)":undefined}}/>
+                <input type="text" inputMode="decimal" placeholder="0.0" value={e.dayEnd} onChange={function(ev){setEF(m.id,"dayEnd",ev.target.value);}} style={{width:"100%",boxSizing:"border-box",fontSize:13,borderColor:dErr?"var(--color-border-danger)":undefined}}/>
+                <div style={{width:1,background:"var(--color-border-tertiary)",margin:"0 auto"}}/>
+                <input type="text" inputMode="decimal" placeholder="0.0" value={e.nightStart} onChange={function(ev){setEF(m.id,"nightStart",ev.target.value);}} style={{width:"100%",boxSizing:"border-box",fontSize:13,borderColor:nErr?"var(--color-border-danger)":undefined}}/>
+                <input type="text" inputMode="decimal" placeholder="0.0" value={e.nightEnd} onChange={function(ev){setEF(m.id,"nightEnd",ev.target.value);}} style={{width:"100%",boxSizing:"border-box",fontSize:13,borderColor:nErr?"var(--color-border-danger)":undefined}}/>
+              </div>
+              {(dh!==null||nh!==null) && (
+                <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 8px 1fr 1fr",gap:"2px 8px",marginTop:4}}>
+                  <span style={{gridColumn:"1/3",fontSize:11,color:dErr?"var(--color-text-danger)":"var(--color-text-tertiary)"}}>
+                    {dErr?"end < start":dh!==null?("= "+fmt(dh)+" / "+db+"h billed"):""}
+                  </span>
+                  <span/>
+                  <span style={{gridColumn:"4/6",fontSize:11,color:nErr?"var(--color-text-danger)":"var(--color-text-tertiary)"}}>
+                    {nErr?"end < start":nh!==null?("= "+fmt(nh)+" / "+nb+"h billed"):""}
+                  </span>
+                </div>
+              )}
+              {tot !== null && (
+                <div style={{marginTop:"0.75rem",padding:"8px 12px",background:"var(--color-background-secondary)",borderRadius:6,display:"flex",justifyContent:"space-between",fontSize:13}}>
+                  <span style={{color:"var(--color-text-secondary)"}}>Total for the day</span>
+                  <strong style={{color:"var(--color-text-primary)"}}>{fmt(tot)} ({(db||0)+(nb||0)}h billed)</strong>
+                </div>
+              )}
+            </>
+          )}
+
+          {e.noWork && (
+            <input type="text" placeholder="Reason (e.g. breakdown, holiday...)" value={e.reason}
+              onChange={function(ev){setReason(m.id,ev.target.value);}}
+              style={{width:"100%",boxSizing:"border-box",fontSize:13,marginBottom:4}}/>
+          )}
+
+          <div style={{display:"flex",gap:8,marginTop:"1rem"}}>
+            <button onClick={async function(){await saveEntry(m.id);setSelMachine(null);}} style={{flex:1,padding:"10px",fontSize:14,fontWeight:500}}>
+              {saving[m.id]===true?"Saving...":"Save Entry ✓"}
+            </button>
+            <button onClick={function(){toggleNW(m.id);}}
+              style={{padding:"10px 14px",fontSize:12,background:e.noWork?"#FEE9E9":"var(--color-background-secondary)",color:e.noWork?"#9B1C1C":"var(--color-text-secondary)",border:"0.5px solid "+(e.noWork?"#FECACA":"var(--color-border-tertiary)"),borderRadius:6,cursor:"pointer"}}>
+              {e.noWork?"Undo no work":"No work"}
+            </button>
+          </div>
+        </div>
+        <style>{"@keyframes spin{to{transform:rotate(360deg);}}"}</style>
       </div>
     );
   }
@@ -601,7 +669,7 @@ export default function App() {
                   <div style={{fontSize:11,color:"var(--color-text-tertiary)"}}>{d.toLocaleDateString("en-GB",{day:"numeric",month:"short"})} {d.toLocaleTimeString("en-GB",{hour:"2-digit",minute:"2-digit"})}</div>
                   <button onClick={function(ev){
                     ev.stopPropagation();
-                    window.storage.delete("mht_rpt:"+r.id).catch(function(){});
+                    store.delete("mht_rpt:"+r.id).catch(function(){});
                     setSavedReports(function(prev){return prev.filter(function(x){return x.id!==r.id;});});
                   }} style={{fontSize:11,padding:"2px 8px",marginTop:4,color:"var(--color-text-tertiary)",background:"transparent",border:"0.5px solid var(--color-border-tertiary)",borderRadius:4,cursor:"pointer"}}>Delete</button>
                 </div>
