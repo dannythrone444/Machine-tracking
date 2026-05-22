@@ -1,430 +1,609 @@
-import { useState, useRef, useEffect } from "react";
+import { useState, useEffect } from "react";
 
-const DAY_NAMES = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+const DAY_NAMES = ["Sun","Mon","Tue","Wed","Thu","Fri","Sat"];
+const DAY_FULL = ["Sunday","Monday","Tuesday","Wednesday","Thursday","Friday","Saturday"];
 
-function calcH(start, end) {
-  const s = parseFloat(start), e = parseFloat(end);
-  if (isNaN(s) || isNaN(e) || e < s) return null;
-  return parseFloat((e - s).toFixed(2));
+function calcH(s, e) {
+  const a = parseFloat(s), b = parseFloat(e);
+  if (isNaN(a) || isNaN(b) || b < a) return null;
+  return parseFloat((b - a).toFixed(2));
 }
-
-function billHours(h) {
+function billH(h) {
   if (h === null) return null;
-  const mins = Math.round((h - Math.floor(h)) * 60);
-  return mins >= 30 ? Math.ceil(h) : Math.floor(h);
+  const m = Math.round((h - Math.floor(h)) * 60);
+  return m >= 30 ? Math.ceil(h) : Math.floor(h);
 }
-
 function fmt(h) {
   if (h === null || h === undefined) return "—";
-  const hrs = Math.floor(h);
-  const mins = Math.round((h - hrs) * 60);
-  return mins > 0 ? (hrs + "h " + mins + "m") : (hrs + "h");
+  const hr = Math.floor(h), m = Math.round((h - hr) * 60);
+  return m > 0 ? (hr + "h " + m + "m") : (hr + "h");
 }
+function todayStr() { return new Date().toISOString().split("T")[0]; }
+function fmtD(s, opts) { return new Date(s + "T12:00:00").toLocaleDateString("en-GB", opts); }
+function emptyEntry() { return { dayStart:"", dayEnd:"", nightStart:"", nightEnd:"", noWork:false, reason:"" }; }
 
-function getDays(start, end) {
-  const days = [], cur = new Date(start), last = new Date(end);
-  while (cur <= last) { days.push(new Date(cur)); cur.setDate(cur.getDate() + 1); }
-  return days;
-}
-
-function fmtDate(d, opts) { return d.toLocaleDateString("en-GB", opts); }
-function emptyRow() { return { dayStart: "", dayEnd: "", nightStart: "", nightEnd: "", noWork: false, reason: "" }; }
-
-function buildReportHTML(reportText, meta) {
-  const body = reportText
-    .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
+function renderMD(t) {
+  return t
     .replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>")
-    .replace(/^### (.+)$/gm, "<h3>$1</h3>")
-    .replace(/^## (.+)$/gm, "<h2>$1</h2>")
-    .replace(/^- (.+)$/gm, "<li>$1</li>")
-    .replace(/(<li>.*<\/li>\n?)+/g, function(m) { return "<ul>" + m + "</ul>"; })
-    .replace(/\n\n/g, "</p><p>").replace(/\n/g, "<br/>");
-  return "<!DOCTYPE html><html><head><meta charset='utf-8'/><title>" + meta.title + "</title><style>" +
+    .replace(/^### (.+)$/gm, "<h3 style=\"font-size:14px;font-weight:600;margin:1rem 0 0.2rem;color:var(--color-text-primary)\">$1</h3>")
+    .replace(/^## (.+)$/gm, "<h2 style=\"font-size:16px;font-weight:600;margin:1.5rem 0 0.4rem;color:var(--color-text-primary);border-bottom:1px solid var(--color-border-tertiary);padding-bottom:4px\">$1</h2>")
+    .replace(/^- (.+)$/gm, "<div style=\"padding-left:1rem;margin:0.15rem 0\">• $1</div>")
+    .replace(/\n\n/g, "<br/>").replace(/\n/g, " ");
+}
+
+function buildPrintHTML(report, meta) {
+  const body = report
+    .replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;")
+    .replace(/\*\*(.+?)\*\*/g,"<strong>$1</strong>")
+    .replace(/^### (.+)$/gm,"<h3>$1</h3>")
+    .replace(/^## (.+)$/gm,"<h2>$1</h2>")
+    .replace(/^- (.+)$/gm,"<li>$1</li>")
+    .replace(/\n\n/g,"</p><p>").replace(/\n/g," ");
+  return "<!DOCTYPE html><html><head><meta charset='utf-8'/><title>" + meta.name + " Report</title><style>" +
     "body{font-family:Georgia,serif;max-width:800px;margin:40px auto;padding:0 32px;color:#111;font-size:14px;line-height:1.8}" +
-    "h1{font-size:22px;margin:0 0 4px}" +
-    "h2{font-size:17px;font-weight:600;margin:2rem 0 0.5rem;border-bottom:1px solid #ddd;padding-bottom:4px}" +
-    "h3{font-size:14px;font-weight:600;margin:1.25rem 0 0.25rem;color:#333}" +
-    "ul{margin:0.25rem 0 0.5rem 1.25rem;padding:0}" +
-    "li{margin:0.15rem 0}" +
-    "p{margin:0.4rem 0}" +
-    ".meta{font-size:13px;color:#555;margin-bottom:1.5rem}" +
-    ".header{border-bottom:2px solid #111;padding-bottom:12px;margin-bottom:24px}" +
+    "h1{font-size:22px;margin:0 0 4px}h2{font-size:17px;font-weight:600;margin:2rem 0 0.5rem;border-bottom:1px solid #ddd;padding-bottom:4px}" +
+    "h3{font-size:14px;font-weight:600;margin:1.25rem 0 0.25rem}li{margin:0.15rem 0}p{margin:0.4rem 0}" +
+    ".hdr{border-bottom:2px solid #111;padding-bottom:12px;margin-bottom:24px}" +
     ".badge{display:inline-block;background:#f3f3f3;border:1px solid #ddd;border-radius:4px;padding:2px 10px;font-size:12px;margin-right:8px}" +
-    "@media print{body{margin:20px auto}}" +
-    "</style></head><body>" +
-    "<div class='header'><h1>" + meta.machineName + "</h1>" +
-    "<div class='meta'>" +
-    "<span class='badge'>📅 " + meta.period + "</span>" +
-    "<span class='badge'>⏱ " + meta.totalHours + "h total</span>" +
-    "<span class='badge'>" + meta.weeks + " week" + (meta.weeks !== 1 ? "s" : "") + "</span>" +
-    (meta.noWorkDays > 0 ? "<span class='badge'>⛔ " + meta.noWorkDays + " no-work day" + (meta.noWorkDays !== 1 ? "s" : "") + "</span>" : "") +
-    "</div></div>" +
+    ".foot{margin-top:40px;padding-top:12px;border-top:1px solid #ddd;font-size:11px;color:#999}" +
+    "@media print{body{margin:20px auto}}</style></head><body>" +
+    "<div class='hdr'><h1>" + meta.name + "</h1>" +
+    "<div style='font-size:13px;color:#555;margin-top:4px'>" +
+    "<span class='badge'>" + meta.type + " Report</span>" +
+    "<span class='badge'>📅 " + meta.period + "</span></div></div>" +
     "<p>" + body + "</p>" +
-    "<div style='margin-top:40px;padding-top:12px;border-top:1px solid #ddd;font-size:11px;color:#999'>Generated by Machine Hours Tracker · " + new Date().toLocaleDateString("en-GB", { day: "numeric", month: "long", year: "numeric" }) + "</div>" +
+    "<div class='foot'>Generated by Machine Hours Tracker · " + new Date().toLocaleDateString("en-GB",{day:"numeric",month:"long",year:"numeric"}) + "</div>" +
     "</body></html>";
 }
 
-function downloadPDF(reportText, meta) {
-  const html = buildReportHTML(reportText, meta);
-  const w = window.open("", "_blank");
-  if (!w) { alert("Please allow pop-ups to download the report."); return; }
-  w.document.write(html);
-  w.document.close();
-  w.focus();
-  setTimeout(function() { w.print(); }, 400);
-}
-
-function downloadImage(reportText, meta, callback) {
-  const html = buildReportHTML(reportText, meta);
-  const W = 860, H = 1200;
-  const svg = "<svg xmlns='http://www.w3.org/2000/svg' width='" + W + "' height='" + H + "'>" +
-    "<foreignObject width='100%' height='100%'>" +
-    "<div xmlns='http://www.w3.org/1999/xhtml' style='background:#fff;padding:0;margin:0;width:" + W + "px;min-height:" + H + "px'>" +
-    html.replace(/<html>|<\/html>|<!DOCTYPE html>/gi, "").replace(/<head>[\s\S]*?<\/head>/i, "") + "</div></foreignObject></svg>";
-  const blob = new Blob([svg], { type: "image/svg+xml;charset=utf-8" });
-  const url = URL.createObjectURL(blob);
-  const img = new Image();
-  img.onload = function() {
-    const canvas = document.createElement("canvas");
-    canvas.width = W; canvas.height = H;
-    const ctx = canvas.getContext("2d");
-    ctx.fillStyle = "#fff"; ctx.fillRect(0, 0, W, H);
-    ctx.drawImage(img, 0, 0);
-    URL.revokeObjectURL(url);
-    const a = document.createElement("a");
-    a.download = meta.machineName.replace(/\s+/g, "_") + "_report.png";
-    a.href = canvas.toDataURL("image/png");
-    a.click();
-    if (callback) callback();
-  };
-  img.onerror = function() {
-    URL.revokeObjectURL(url);
-    alert("Image export failed. Try PDF instead.");
-    if (callback) callback();
-  };
-  img.src = url;
-}
-
-function DownloadButtons(props) {
-  const [imgLoading, setImgLoading] = useState(false);
-  const meta = {
-    machineName: props.machineName,
-    period: props.period,
-    totalHours: props.totalHours,
-    weeks: props.weeks,
-    noWorkDays: props.noWorkDays,
-    title: props.machineName + " — Machine Hours Report"
-  };
+function DownloadBar(props) {
+  const [imgBusy, setImgBusy] = useState(false);
+  const meta = { name: props.name, type: props.type, period: props.period };
+  function doPDF() {
+    const w = window.open("","_blank");
+    if (!w) { alert("Allow pop-ups to download PDF."); return; }
+    w.document.write(buildPrintHTML(props.report, meta));
+    w.document.close(); w.focus();
+    setTimeout(function() { w.print(); }, 400);
+  }
+  function doImage() {
+    setImgBusy(true);
+    const W = 860, H = 1300;
+    const html = buildPrintHTML(props.report, meta);
+    const svg = "<svg xmlns='http://www.w3.org/2000/svg' width='" + W + "' height='" + H + "'><foreignObject width='100%' height='100%'><div xmlns='http://www.w3.org/1999/xhtml' style='background:#fff;width:" + W + "px;min-height:" + H + "px'>" + html + "</div></foreignObject></svg>";
+    const blob = new Blob([svg],{type:"image/svg+xml;charset=utf-8"});
+    const url = URL.createObjectURL(blob);
+    const img = new Image();
+    img.onload = function() {
+      const c = document.createElement("canvas"); c.width = W; c.height = H;
+      const ctx = c.getContext("2d"); ctx.fillStyle="#fff"; ctx.fillRect(0,0,W,H); ctx.drawImage(img,0,0);
+      URL.revokeObjectURL(url);
+      const a = document.createElement("a");
+      a.download = props.name.replace(/\s+/g,"_") + "_report.png";
+      a.href = c.toDataURL("image/png"); a.click();
+      setImgBusy(false);
+    };
+    img.onerror = function() { URL.revokeObjectURL(url); alert("Image export failed. Try PDF."); setImgBusy(false); };
+    img.src = url;
+  }
   return (
-    <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-      <button onClick={function() { downloadPDF(props.report, meta); }}
-        style={{ fontSize: 13, padding: "6px 14px", display: "flex", alignItems: "center", gap: 6 }}>
-        ⬇ Download PDF
-      </button>
-      <button onClick={function() {
-        setImgLoading(true);
-        downloadImage(props.report, meta, function() { setImgLoading(false); });
-      }} disabled={imgLoading}
-        style={{ fontSize: 13, padding: "6px 14px", display: "flex", alignItems: "center", gap: 6 }}>
-        {imgLoading ? "Exporting..." : "🖼 Save as Image"}
-      </button>
+    <div style={{display:"flex",gap:8,marginTop:"1rem",paddingTop:"1rem",borderTop:"0.5px solid var(--color-border-tertiary)"}}>
+      <button onClick={doPDF} style={{fontSize:13,padding:"6px 14px"}}>⬇ Download PDF</button>
+      <button onClick={doImage} disabled={imgBusy} style={{fontSize:13,padding:"6px 14px"}}>{imgBusy ? "Exporting..." : "🖼 Save as Image"}</button>
     </div>
   );
 }
 
-function renderMarkdown(t) {
-  return t
-    .replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>")
-    .replace(/^### (.+)$/gm, "<h3 style=\"font-size:14px;font-weight:600;margin:1.1rem 0 0.3rem;color:var(--color-text-primary)\">$1</h3>")
-    .replace(/^## (.+)$/gm, "<h2 style=\"font-size:16px;font-weight:600;margin:1.5rem 0 0.5rem;color:var(--color-text-primary);border-bottom:1px solid var(--color-border-tertiary);padding-bottom:4px\">$1</h2>")
-    .replace(/^- (.+)$/gm, "<div style=\"margin:0.2rem 0;padding-left:1rem;color:var(--color-text-primary)\"><span style=\"color:var(--color-text-secondary);margin-right:6px\">•</span>$1</div>")
-    .replace(/\n\n/g, "<br/>").replace(/\n/g, " ");
-}
-
 export default function App() {
-  const [view, setView] = useState("home"); // home | tracker | history | historyDetail
-  const [step, setStep] = useState(1);
-  const [machineName, setMachineName] = useState("");
-  const [startDate, setStartDate] = useState("");
-  const [endDate, setEndDate] = useState("");
-  const [days, setDays] = useState([]);
-  const [rows, setRows] = useState([]);
-  const [report, setReport] = useState("");
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState("");
-  const [submitted, setSubmitted] = useState(false);
-  const [history, setHistory] = useState([]);
-  const [selectedEntry, setSelectedEntry] = useState(null);
-  const [historyLoading, setHistoryLoading] = useState(false);
-  const reportRef = useRef(null);
+  const [view, setView] = useState("dashboard");
+  const [machines, setMachines] = useState([]);
+  const [appLoading, setAppLoading] = useState(true);
+  const [dashEntries, setDashEntries] = useState({});
+  const [dashDate, setDashDate] = useState(todayStr());
+  const [saving, setSaving] = useState({});
+  const [savedReports, setSavedReports] = useState([]);
+  const [selReport, setSelReport] = useState(null);
 
-  useEffect(function() { loadHistory(); }, []);
+  // Machine form
+  const [editM, setEditM] = useState(null);
+  const [mName, setMName] = useState("");
+  const [mStart, setMStart] = useState(1);
+  const [mBreak, setMBreak] = useState(6);
 
-  async function loadHistory() {
-    setHistoryLoading(true);
+  // Report form
+  const [rType, setRType] = useState("daily");
+  const [rMid, setRMid] = useState("");
+  const [rDate, setRDate] = useState(todayStr());
+  const [rFrom, setRFrom] = useState("");
+  const [rTo, setRTo] = useState("");
+  const [rLoading, setRLoading] = useState(false);
+  const [rError, setRError] = useState("");
+  const [rResult, setRResult] = useState("");
+
+  useEffect(function() { loadAll(); }, []);
+  useEffect(function() { if (!appLoading && machines.length) loadDash(); }, [dashDate, machines, appLoading]);
+
+  async function loadAll() {
+    setAppLoading(true);
     try {
-      const result = await window.storage.list("mht:");
-      if (result && result.keys && result.keys.length > 0) {
-        const entries = [];
-        for (let i = 0; i < result.keys.length; i++) {
-          try {
-            const r = await window.storage.get(result.keys[i]);
-            if (r) entries.push(JSON.parse(r.value));
-          } catch (e) {}
+      const mr = await window.storage.get("mht_machines", true);
+      if (mr) setMachines(JSON.parse(mr.value));
+    } catch(e) {}
+    try {
+      const rl = await window.storage.list("mht_rpt:");
+      if (rl && rl.keys && rl.keys.length) {
+        const arr = [];
+        for (let i = 0; i < rl.keys.length; i++) {
+          try { const r = await window.storage.get(rl.keys[i]); if (r) arr.push(JSON.parse(r.value)); } catch(e) {}
         }
-        entries.sort(function(a, b) { return b.savedAt - a.savedAt; });
-        setHistory(entries);
+        arr.sort(function(a,b){return b.savedAt-a.savedAt;});
+        setSavedReports(arr);
       }
-    } catch (e) {}
-    setHistoryLoading(false);
+    } catch(e) {}
+    setAppLoading(false);
   }
 
-  async function saveToHistory(entry) {
-    const key = "mht:" + entry.id;
-    try {
-      await window.storage.set(key, JSON.stringify(entry));
-      setHistory(function(prev) {
-        const next = [entry].concat(prev.filter(function(e) { return e.id !== entry.id; }));
-        return next;
-      });
-    } catch (e) {}
+  async function loadDash() {
+    const ne = {};
+    for (let i = 0; i < machines.length; i++) {
+      const m = machines[i];
+      if (!m.active) continue;
+      try {
+        const r = await window.storage.get("mht_e:" + m.id + ":" + dashDate, true);
+        ne[m.id] = r ? JSON.parse(r.value) : emptyEntry();
+      } catch(e) { ne[m.id] = emptyEntry(); }
+    }
+    setDashEntries(ne);
   }
 
-  async function deleteEntry(id) {
-    try {
-      await window.storage.delete("mht:" + id);
-      setHistory(function(prev) { return prev.filter(function(e) { return e.id !== id; }); });
-      if (selectedEntry && selectedEntry.id === id) { setSelectedEntry(null); setView("history"); }
-    } catch (e) {}
+  async function saveMachines(list) {
+    try { await window.storage.set("mht_machines", JSON.stringify(list), true); } catch(e) {}
+    setMachines(list);
   }
 
-  const dateError = (startDate && endDate && new Date(endDate) < new Date(startDate)) ? "End date must be after start date." : null;
-  const dayCount = (startDate && endDate && !dateError) ? getDays(startDate, endDate).length : 0;
-  const tooMany = dayCount > 31;
-
-  function handleProceed() {
-    const d = getDays(startDate, endDate);
-    setDays(d); setRows(d.map(emptyRow));
-    setReport(""); setSubmitted(false); setError(""); setStep(2);
+  function setEF(mid, field, val) {
+    setDashEntries(function(p) {
+      const cur = p[mid] || emptyEntry();
+      const n = Object.assign({}, cur);
+      n[field] = typeof val === "string" ? val.replace(/[^0-9.]/g,"") : val;
+      return Object.assign({}, p, { [mid]: n });
+    });
   }
-
-  function setField(i, field, val) {
-    setRows(function(prev) {
-      return prev.map(function(r, idx) {
-        if (idx !== i) return r;
-        const next = Object.assign({}, r);
-        next[field] = val.replace(/[^0-9.]/g, "");
-        return next;
-      });
+  function toggleNW(mid) {
+    setDashEntries(function(p) {
+      const cur = p[mid] || emptyEntry();
+      return Object.assign({}, p, { [mid]: Object.assign({}, cur, {noWork:!cur.noWork,dayStart:"",dayEnd:"",nightStart:"",nightEnd:""}) });
+    });
+  }
+  function setReason(mid, val) {
+    setDashEntries(function(p) {
+      return Object.assign({}, p, { [mid]: Object.assign({}, p[mid]||emptyEntry(), {reason:val}) });
     });
   }
 
-  function toggleNoWork(i) {
-    setRows(function(prev) {
-      return prev.map(function(r, idx) {
-        if (idx !== i) return r;
-        return Object.assign({}, r, { noWork: !r.noWork, dayStart: "", dayEnd: "", nightStart: "", nightEnd: "" });
-      });
-    });
+  async function saveEntry(mid) {
+    const e = dashEntries[mid]; if (!e) return;
+    setSaving(function(p){return Object.assign({},p,{[mid]:true});});
+    try { await window.storage.set("mht_e:"+mid+":"+dashDate, JSON.stringify(Object.assign({},e,{date:dashDate,machineId:mid,savedAt:Date.now()})), true); } catch(er) {}
+    setSaving(function(p){return Object.assign({},p,{[mid]:false});});
   }
 
-  function setReason(i, val) {
-    setRows(function(prev) {
-      return prev.map(function(r, idx) {
-        if (idx !== i) return r;
-        return Object.assign({}, r, { reason: val });
-      });
-    });
+  async function getRange(mid, sd, ed) {
+    const res = {};
+    const cur = new Date(sd+"T12:00:00"), last = new Date(ed+"T12:00:00");
+    while (cur <= last) {
+      const ds = cur.toISOString().split("T")[0];
+      try { const r = await window.storage.get("mht_e:"+mid+":"+ds, true); if (r) res[ds]=JSON.parse(r.value); } catch(e) {}
+      cur.setDate(cur.getDate()+1);
+    }
+    return res;
   }
 
-  const dayHours = rows.map(function(r) { return r.noWork ? null : calcH(r.dayStart, r.dayEnd); });
-  const nightHours = rows.map(function(r) { return r.noWork ? null : calcH(r.nightStart, r.nightEnd); });
-  const dayBilled = dayHours.map(billHours);
-  const nightBilled = nightHours.map(billHours);
-
-  const totalPerDay = dayHours.map(function(d, i) {
-    const n = nightHours[i];
-    if (d === null && n === null) return null;
-    return parseFloat(((d || 0) + (n || 0)).toFixed(2));
-  });
-
-  const filledDays = totalPerDay.filter(function(h) { return h !== null; });
-  const canGenerate = filledDays.length >= 1 || rows.some(function(r) { return r.noWork; });
-  const grandTotal = filledDays.reduce(function(a, b) { return a + b; }, 0);
-  const avg = filledDays.length ? grandTotal / filledDays.length : 0;
-  const validTotals = totalPerDay.filter(function(h) { return h !== null; });
-  const peak = validTotals.length ? Math.max.apply(null, validTotals) : 0;
-  const low = validTotals.length ? Math.min.apply(null, validTotals) : 0;
-  const peakIdx = totalPerDay.indexOf(peak);
-  const peakDayLabel = days[peakIdx] ? fmtDate(days[peakIdx], { day: "numeric", month: "short" }) : "—";
-  const maxBar = Math.max.apply(null, totalPerDay.map(function(h) { return h || 0; }).concat([1]));
-
-  function hasErr(i, shift) {
-    const s = parseFloat(rows[i][shift + "Start"]);
-    const e = parseFloat(rows[i][shift + "End"]);
-    return rows[i][shift + "Start"] && rows[i][shift + "End"] && !isNaN(s) && !isNaN(e) && e < s;
-  }
-
-  function inputSm(err) {
-    return { width: "100%", boxSizing: "border-box", fontSize: 13, borderColor: err ? "var(--color-border-danger)" : undefined };
+  function getWeekRange(m, refDate) {
+    const ref = new Date(refDate+"T12:00:00");
+    const sd = parseInt(m.startDay), bd = parseInt(m.breakDay);
+    const daysBack = (ref.getDay()-sd+7)%7;
+    const start = new Date(ref); start.setDate(ref.getDate()-daysBack);
+    const daysForward = (bd-sd+7)%7;
+    const end = new Date(start); end.setDate(start.getDate()+daysForward);
+    return { start:start.toISOString().split("T")[0], end:end.toISOString().split("T")[0] };
   }
 
   async function generateReport() {
-    setLoading(true); setError(""); setReport(""); setSubmitted(true);
-    setTimeout(function() { if (reportRef.current) reportRef.current.scrollIntoView({ behavior: "smooth" }); }, 100);
+    if (!rMid) { setRError("Please select a machine."); return; }
+    const machine = machines.find(function(m){return m.id===rMid;});
+    if (!machine) { setRError("Machine not found."); return; }
+    setRLoading(true); setRError(""); setRResult("");
 
-    const weekGroups = [];
-    for (let wi = 0; wi < days.length; wi += 6) {
-      const grp = [];
-      for (let wj = wi; wj < Math.min(wi + 6, days.length); wj++) grp.push(wj);
-      weekGroups.push(grp);
-    }
+    let sd = rDate, ed = rDate;
+    if (rType==="weekly") { const rng=getWeekRange(machine,rDate); sd=rng.start; ed=rng.end; }
+    else if (rType==="custom") { sd=rFrom; ed=rTo; if(!sd||!ed){setRError("Select start and end dates.");setRLoading(false);return;} }
 
-    const dailyLines = days.map(function(d, i) {
-      const dateStr = fmtDate(d, { weekday: "long", day: "numeric", month: "long", year: "numeric" });
-      if (rows[i].noWork) return dateStr + " | NO WORK — Reason: " + (rows[i].reason || "No reason given");
-      const dh = dayHours[i], nh = nightHours[i];
-      const db = dayBilled[i], nb = nightBilled[i];
-      const dl = dh !== null ? ("Day Shift: StartOdo=" + rows[i].dayStart + " EndOdo=" + rows[i].dayEnd + " Actual=" + dh.toFixed(2) + "h Billed=" + db + "h") : "Day Shift: no data";
-      const nl = nh !== null ? ("Night Shift: StartOdo=" + rows[i].nightStart + " EndOdo=" + rows[i].nightEnd + " Actual=" + nh.toFixed(2) + "h Billed=" + nb + "h") : "Night Shift: no data";
-      return dateStr + " | " + dl + " | " + nl;
+    const rangeE = await getRange(rMid, sd, ed);
+    const dates = [];
+    const cur = new Date(sd+"T12:00:00"), last = new Date(ed+"T12:00:00");
+    while (cur<=last) { dates.push(cur.toISOString().split("T")[0]); cur.setDate(cur.getDate()+1); }
+
+    const dailyLines = dates.map(function(d) {
+      const e = rangeE[d];
+      const ds = fmtD(d,{weekday:"long",day:"numeric",month:"long",year:"numeric"});
+      if (!e) return ds+": No data entered";
+      if (e.noWork) return ds+": NO WORK — "+(e.reason||"No reason given");
+      const dh=calcH(e.dayStart,e.dayEnd), nh=calcH(e.nightStart,e.nightEnd);
+      const db=billH(dh), nb=billH(nh);
+      const dl=dh!==null?("Day: start="+e.dayStart+" end="+e.dayEnd+" actual="+dh.toFixed(2)+"h billed="+db+"h"):"Day: no data";
+      const nl=nh!==null?("Night: start="+e.nightStart+" end="+e.nightEnd+" actual="+nh.toFixed(2)+"h billed="+nb+"h"):"Night: no data";
+      return ds+" | "+dl+" | "+nl;
     }).join("\n");
 
-    const weeklyLines = weekGroups.map(function(idxs, w) {
-      const wS = fmtDate(days[idxs[0]], { weekday: "short", day: "numeric", month: "short" });
-      const wE = fmtDate(days[idxs[idxs.length - 1]], { weekday: "short", day: "numeric", month: "short" });
-      const dayEntries = idxs.map(function(i) {
-        if (rows[i].noWork) return fmtDate(days[i], { weekday: "short", day: "numeric", month: "short" }) + ": NO WORK (" + (rows[i].reason || "no reason") + ")";
-        const db = dayBilled[i];
-        return fmtDate(days[i], { weekday: "short", day: "numeric", month: "short" }) + ": " + (db !== null ? db + "h" : "no data");
+    const wGroups=[];
+    for (let wi=0;wi<dates.length;wi+=6) wGroups.push(dates.slice(wi,wi+6));
+
+    const weeklyLines = wGroups.map(function(wD,w) {
+      const dE=wD.map(function(d){
+        const e=rangeE[d],lb=fmtD(d,{weekday:"short",day:"numeric",month:"short"});
+        if(!e) return lb+": no data";
+        if(e.noWork) return lb+": NO WORK ("+(e.reason||"no reason")+")";
+        const db=billH(calcH(e.dayStart,e.dayEnd));
+        return lb+": "+(db!==null?db+"h":"no data");
       }).join(", ");
-      const nightEntries = idxs.map(function(i) {
-        if (rows[i].noWork) return fmtDate(days[i], { weekday: "short", day: "numeric", month: "short" }) + ": NO WORK";
-        const nb = nightBilled[i];
-        return fmtDate(days[i], { weekday: "short", day: "numeric", month: "short" }) + ": " + (nb !== null ? nb + "h" : "no data");
+      const nE=wD.map(function(d){
+        const e=rangeE[d],lb=fmtD(d,{weekday:"short",day:"numeric",month:"short"});
+        if(!e) return lb+": no data";
+        if(e.noWork) return lb+": NO WORK";
+        const nb=billH(calcH(e.nightStart,e.nightEnd));
+        return lb+": "+(nb!==null?nb+"h":"no data");
       }).join(", ");
-      const wDB = idxs.reduce(function(s, i) { return s + (dayBilled[i] || 0); }, 0);
-      const wNB = idxs.reduce(function(s, i) { return s + (nightBilled[i] || 0); }, 0);
-      return "Week " + (w + 1) + " (" + wS + " to " + wE + "):\n  Day shifts: " + dayEntries + "\n  Total Day Shift: " + wDB + "h\n  Night shifts: " + nightEntries + "\n  Total Night Shift: " + wNB + "h\n  Total Week: " + wDB + "h + " + wNB + "h = " + (wDB + wNB) + "h";
+      const wDB=wD.reduce(function(s,d){const e=rangeE[d];return s+(e&&!e.noWork?(billH(calcH(e.dayStart,e.dayEnd))||0):0);},0);
+      const wNB=wD.reduce(function(s,d){const e=rangeE[d];return s+(e&&!e.noWork?(billH(calcH(e.nightStart,e.nightEnd))||0):0);},0);
+      return "Week "+(w+1)+" ("+fmtD(wD[0],{day:"numeric",month:"short"})+" to "+fmtD(wD[wD.length-1],{day:"numeric",month:"short"})+")\n  Day shifts: "+dE+"\n  Total Day: "+wDB+"h\n  Night shifts: "+nE+"\n  Total Night: "+wNB+"h\n  Total Week: "+wDB+"h + "+wNB+"h = "+(wDB+wNB)+"h";
     }).join("\n\n");
 
-    const periodStart = fmtDate(days[0], { weekday: "long", day: "numeric", month: "long", year: "numeric" });
-    const periodEnd = fmtDate(days[days.length - 1], { weekday: "long", day: "numeric", month: "long", year: "numeric" });
-    const prompt = [
-      "You are an industrial equipment analyst. Generate a structured professional operations report.",
-      "Machine: " + (machineName || "Unnamed Machine"),
-      "Period: " + periodStart + " to " + periodEnd,
-      "Note: A week = 6 days. Less than 30 mins rounds down, 30+ rounds up.",
-      "", "DAILY DATA:", dailyLines, "", "WEEKLY DATA:", weeklyLines, "",
-      "Generate the report in this EXACT structure:",
-      "", "## Daily Report", "",
-      "For EACH day:", "### [Full date]",
-      "**Day Shift**", "- Start Odometer: [value]", "- End Odometer: [value]", "- Actual Hours: [value]h", "- Billed Hours: [value]h",
-      "", "**Night Shift**", "- Start Odometer: [value]", "- End Odometer: [value]", "- Actual Hours: [value]h", "- Billed Hours: [value]h",
-      "If no data: No data recorded. If NO WORK: NO WORK — Reason: [reason]",
-      "", "## Weekly Report", "",
-      "For EACH week:", "### Week [N] ([start] to [end])", "",
-      "**Day Shifts**", "- [Date]: [billed]h (or NO WORK — [reason])", "...", "**Total Day Shift: [X]h**", "",
-      "**Night Shifts**", "- [Date]: [billed]h (or NO WORK)", "...", "**Total Night Shift: [X]h**", "",
-      "**Total Week: [day]h + [night]h = [combined]h**", "",
-      "## Overall Summary", "3-4 sentences on performance, no-work days, trends, and 2 recommendations.",
-      "Use only the data provided. Be precise and professional."
-    ].join("\n");
+    const isDaily = rType==="daily";
+    const pl=[
+      "You are an industrial equipment analyst. Generate a structured professional report.",
+      "Machine: "+machine.name,
+      "Report type: "+(isDaily?"Daily":rType==="weekly"?"Weekly":"Custom Range"),
+      "Period: "+fmtD(sd,{weekday:"long",day:"numeric",month:"long",year:"numeric"})+(sd!==ed?" to "+fmtD(ed,{weekday:"long",day:"numeric",month:"long",year:"numeric"}):""),
+      "Rules: 1 week = 6 days. Under 30 mins rounds down, 30+ rounds up. Billed hours only in weekly summary.",
+      "","DAILY DATA:",dailyLines
+    ];
+    if (!isDaily) pl.push("","WEEKLY DATA:",weeklyLines);
+    if (isDaily) {
+      pl.push("","Generate a daily report for this day:","### [Full date]","**Day Shift**","- Start Odometer: [value]","- End Odometer: [value]","- Actual Hours: [value]h","- Billed Hours: [value]h","**Night Shift**","- Start Odometer: [value]","- End Odometer: [value]","- Actual Hours: [value]h","- Billed Hours: [value]h","If no data: No data recorded. If NO WORK: NO WORK — Reason: [reason]","End with a brief one-line observation.");
+    } else {
+      pl.push("","Generate the report in this structure:","## Daily Report","For each day: ### [Full date], Day Shift details (start odo, end odo, actual, billed), Night Shift details. If NO WORK state reason.","## Weekly Report","For each week: ### Week N ([range])","**Day Shifts**","- [Date]: [billed]h (one line per day)","**Total Day Shift: Xh**","","**Night Shifts**","- [Date]: [billed]h (one line per day)","**Total Night Shift: Xh**","","**Total Week: Xh + Xh = Xh**","","## Overall Summary","3-4 sentences on performance and 2 recommendations.");
+    }
+    pl.push("","Use only the data provided. Be precise and professional.");
+    const prompt = pl.join("\n");
 
     try {
-      const res = await fetch("/api/generate", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ model: "claude-sonnet-4-5", max_tokens: 1200, messages: [{ role: "user", content: prompt }] })
-      });
+      const res = await fetch("/api/generate",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({model:"llama-3.3-70b-versatile",max_tokens:1500,messages:[{role:"user",content:prompt}]})});
       const data = await res.json();
-      if (!res.ok) { setError("API error " + res.status + ": " + (data.error ? data.error.message : "Unknown error")); setLoading(false); return; }
-      const text = (data.content || []).map(function(b) { return b.text || ""; }).join("");
-      setReport(text || "No report generated.");
-
-      // Save to history
-      const entry = {
-        id: Date.now().toString(),
-        savedAt: Date.now(),
-        machineName: machineName || "Unnamed Machine",
-        startDate: startDate,
-        endDate: endDate,
-        totalHours: grandTotal.toFixed(2),
-        weeks: Math.ceil(days.length / 6),
-        noWorkDays: rows.filter(function(r) { return r.noWork; }).length,
-        report: text
-      };
-      await saveToHistory(entry);
-    } catch (e) {
-      setError("Request failed: " + e.message);
-    }
-    setLoading(false);
+      if (!res.ok) { setRError("API error "+res.status+": "+(data.error||"Unknown")); setRLoading(false); return; }
+      const text=(data.content||[]).map(function(b){return b.text||"";}).join("");
+      if (!text) { setRError("No report generated."); setRLoading(false); return; }
+      setRResult(text);
+      const entry={id:Date.now().toString(),savedAt:Date.now(),machineName:machine.name,machineId:machine.id,type:rType,startDate:sd,endDate:ed,report:text};
+      try { await window.storage.set("mht_rpt:"+entry.id, JSON.stringify(entry)); } catch(e) {}
+      setSavedReports(function(prev){return [entry].concat(prev);});
+    } catch(e) { setRError("Request failed: "+e.message); }
+    setRLoading(false);
   }
 
-  // ── HOME / NAV ──
-  function NavBar() {
+  function Nav() {
+    const tabs=[{id:"dashboard",label:"📋 Today"},{id:"machines",label:"⚙ Machines"},{id:"reports",label:"📊 Reports"},{id:"history",label:"🕓 History"}];
     return (
-      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "1.5rem" }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-          <span style={{ fontSize: 18, fontWeight: 600, color: "var(--color-text-primary)", cursor: "pointer" }} onClick={function() { setView("home"); }}>⚙ MHT</span>
+      <div style={{display:"flex",borderBottom:"0.5px solid var(--color-border-tertiary)",marginBottom:"1.25rem"}}>
+        {tabs.map(function(t) {
+          const active=view===t.id||(t.id==="machines"&&view==="machineForm");
+          return (
+            <button key={t.id} onClick={function(){setView(t.id);setRResult("");setRError("");setSelReport(null);}}
+              style={{flex:1,padding:"10px 4px",fontSize:13,fontWeight:active?600:400,color:active?"var(--color-text-primary)":"var(--color-text-secondary)",background:"transparent",border:"none",borderBottom:active?"2px solid var(--color-text-primary)":"2px solid transparent",cursor:"pointer"}}>
+              {t.label}
+            </button>
+          );
+        })}
+      </div>
+    );
+  }
+
+  const wrap = { padding:"1rem", maxWidth:700, margin:"0 auto", fontFamily:"var(--font-sans)" };
+  const card = { background:"var(--color-background-primary)", border:"0.5px solid var(--color-border-tertiary)", borderRadius:"var(--border-radius-lg)", padding:"1rem 1.25rem", marginBottom:"0.875rem" };
+
+  if (appLoading) return <div style={{padding:"2rem",textAlign:"center",color:"var(--color-text-secondary)",fontFamily:"var(--font-sans)"}}>Loading...</div>;
+
+  // ── DASHBOARD ──
+  if (view==="dashboard") {
+    const active = machines.filter(function(m){return m.active;});
+    return (
+      <div style={wrap}>
+        <Nav />
+        <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:"1rem"}}>
+          <div>
+            <h2 style={{fontSize:18,fontWeight:600,margin:0,color:"var(--color-text-primary)"}}>Daily Entry</h2>
+            <p style={{fontSize:13,color:"var(--color-text-secondary)",margin:"2px 0 0"}}>{new Date(dashDate+"T12:00:00").toLocaleDateString("en-GB",{weekday:"long",day:"numeric",month:"long",year:"numeric"})}</p>
+          </div>
+          <input type="date" value={dashDate} onChange={function(e){setDashDate(e.target.value);}} style={{fontSize:13,padding:"6px 10px",borderRadius:6,border:"0.5px solid var(--color-border-tertiary)",background:"var(--color-background-primary)",color:"var(--color-text-primary)"}} />
         </div>
-        <div style={{ display: "flex", gap: 8 }}>
-          <button onClick={function() { setView("tracker"); setStep(1); }} style={{ fontSize: 13, padding: "6px 14px", background: view === "tracker" ? "var(--color-background-active)" : "var(--color-background-secondary)" }}>
-            + New Report
-          </button>
-          <button onClick={function() { setView("history"); loadHistory(); }} style={{ fontSize: 13, padding: "6px 14px", background: view === "history" || view === "historyDetail" ? "var(--color-background-active)" : "var(--color-background-secondary)" }}>
-            History {history.length > 0 ? "(" + history.length + ")" : ""}
+
+        {active.length===0 && (
+          <div style={{textAlign:"center",padding:"3rem 0",color:"var(--color-text-tertiary)"}}>
+            <div style={{fontSize:32,marginBottom:8}}>⚙</div>
+            <p style={{fontSize:14,margin:"0 0 12px"}}>No machines registered yet.</p>
+            <button onClick={function(){setView("machines");}} style={{fontSize:13,padding:"8px 16px"}}>Register a Machine</button>
+          </div>
+        )}
+
+        {active.map(function(m) {
+          const e=dashEntries[m.id]||emptyEntry();
+          const dh=e.noWork?null:calcH(e.dayStart,e.dayEnd);
+          const nh=e.noWork?null:calcH(e.nightStart,e.nightEnd);
+          const db=billH(dh),nb=billH(nh);
+          const tot=(dh!==null||nh!==null)?((dh||0)+(nh||0)):null;
+          const dErr=!e.noWork&&e.dayStart&&e.dayEnd&&parseFloat(e.dayEnd)<parseFloat(e.dayStart);
+          const nErr=!e.noWork&&e.nightStart&&e.nightEnd&&parseFloat(e.nightEnd)<parseFloat(e.nightStart);
+          return (
+            <div key={m.id} style={card}>
+              <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:"0.75rem"}}>
+                <div>
+                  <span style={{fontSize:15,fontWeight:600,color:"var(--color-text-primary)"}}>{m.name}</span>
+                  <span style={{fontSize:11,color:"var(--color-text-tertiary)",marginLeft:8}}>{DAY_FULL[m.startDay]} → {DAY_FULL[m.breakDay]}</span>
+                </div>
+                {e.noWork
+                  ? <span style={{fontSize:12,background:"#FEE9E9",color:"#9B1C1C",padding:"2px 8px",borderRadius:4}}>No Work</span>
+                  : tot!==null && <span style={{fontSize:13,fontWeight:500,background:"var(--color-background-secondary)",padding:"2px 10px",borderRadius:6}}>{fmt(tot)}</span>}
+              </div>
+
+              {!e.noWork && (
+                <>
+                  <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 8px 1fr 1fr",gap:"5px 8px",marginBottom:4}}>
+                    <div style={{fontSize:11,color:"#A0752B",textAlign:"center",background:"#FDF3E1",borderRadius:4,padding:"2px 0"}}>☀ Day start</div>
+                    <div style={{fontSize:11,color:"#A0752B",textAlign:"center",background:"#FDF3E1",borderRadius:4,padding:"2px 0"}}>☀ Day end</div>
+                    <span/>
+                    <div style={{fontSize:11,color:"#4640A0",textAlign:"center",background:"#EEEDFE",borderRadius:4,padding:"2px 0"}}>☾ Night start</div>
+                    <div style={{fontSize:11,color:"#4640A0",textAlign:"center",background:"#EEEDFE",borderRadius:4,padding:"2px 0"}}>☾ Night end</div>
+                  </div>
+                  <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 8px 1fr 1fr",gap:"5px 8px"}}>
+                    <input type="text" inputMode="decimal" placeholder="0.0" value={e.dayStart} onChange={function(ev){setEF(m.id,"dayStart",ev.target.value);}} style={{width:"100%",boxSizing:"border-box",fontSize:13,borderColor:dErr?"var(--color-border-danger)":undefined}}/>
+                    <input type="text" inputMode="decimal" placeholder="0.0" value={e.dayEnd} onChange={function(ev){setEF(m.id,"dayEnd",ev.target.value);}} style={{width:"100%",boxSizing:"border-box",fontSize:13,borderColor:dErr?"var(--color-border-danger)":undefined}}/>
+                    <div style={{width:1,background:"var(--color-border-tertiary)",margin:"0 auto"}}/>
+                    <input type="text" inputMode="decimal" placeholder="0.0" value={e.nightStart} onChange={function(ev){setEF(m.id,"nightStart",ev.target.value);}} style={{width:"100%",boxSizing:"border-box",fontSize:13,borderColor:nErr?"var(--color-border-danger)":undefined}}/>
+                    <input type="text" inputMode="decimal" placeholder="0.0" value={e.nightEnd} onChange={function(ev){setEF(m.id,"nightEnd",ev.target.value);}} style={{width:"100%",boxSizing:"border-box",fontSize:13,borderColor:nErr?"var(--color-border-danger)":undefined}}/>
+                  </div>
+                  {(dh!==null||nh!==null) && (
+                    <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 8px 1fr 1fr",gap:"2px 8px",marginTop:3}}>
+                      <span style={{gridColumn:"1/3",fontSize:11,color:dErr?"var(--color-text-danger)":"var(--color-text-tertiary)"}}>
+                        {dErr?"end < start":dh!==null?("= "+fmt(dh)+" / "+db+"h billed"):""}
+                      </span>
+                      <span/>
+                      <span style={{gridColumn:"4/6",fontSize:11,color:nErr?"var(--color-text-danger)":"var(--color-text-tertiary)"}}>
+                        {nErr?"end < start":nh!==null?("= "+fmt(nh)+" / "+nb+"h billed"):""}
+                      </span>
+                    </div>
+                  )}
+                </>
+              )}
+
+              {e.noWork && (
+                <input type="text" placeholder="Reason (e.g. breakdown, holiday...)" value={e.reason}
+                  onChange={function(ev){setReason(m.id,ev.target.value);}}
+                  style={{width:"100%",boxSizing:"border-box",fontSize:13,marginBottom:4}}/>
+              )}
+
+              <div style={{display:"flex",gap:8,marginTop:"0.75rem"}}>
+                <button onClick={function(){saveEntry(m.id);}} style={{flex:1,padding:"7px",fontSize:13,fontWeight:500}}>
+                  {saving[m.id]===true?"Saving...":"Save Entry ✓"}
+                </button>
+                <button onClick={function(){toggleNW(m.id);}}
+                  style={{padding:"7px 12px",fontSize:12,background:e.noWork?"#FEE9E9":"var(--color-background-secondary)",color:e.noWork?"#9B1C1C":"var(--color-text-secondary)",border:"0.5px solid "+(e.noWork?"#FECACA":"var(--color-border-tertiary)"),borderRadius:6,cursor:"pointer"}}>
+                  {e.noWork?"Undo":"No work"}
+                </button>
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    );
+  }
+
+  // ── MACHINES LIST ──
+  if (view==="machines") {
+    return (
+      <div style={wrap}>
+        <Nav />
+        <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:"1rem"}}>
+          <h2 style={{fontSize:18,fontWeight:600,margin:0,color:"var(--color-text-primary)"}}>Machines</h2>
+          <button onClick={function(){setEditM(null);setMName("");setMStart(1);setMBreak(6);setView("machineForm");}} style={{fontSize:13,padding:"7px 16px",fontWeight:500}}>+ Register Machine</button>
+        </div>
+        {machines.length===0 && (
+          <div style={{textAlign:"center",padding:"3rem 0",color:"var(--color-text-tertiary)"}}>
+            <div style={{fontSize:32,marginBottom:8}}>⚙</div>
+            <p style={{fontSize:14}}>No machines registered yet.</p>
+          </div>
+        )}
+        {machines.map(function(m) {
+          return (
+            <div key={m.id} style={Object.assign({},card,{opacity:m.active?1:0.55})}>
+              <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start"}}>
+                <div>
+                  <div style={{fontSize:15,fontWeight:600,color:"var(--color-text-primary)"}}>{m.name}</div>
+                  <div style={{fontSize:13,color:"var(--color-text-secondary)",marginTop:3}}>
+                    {DAY_FULL[m.startDay]} → {DAY_FULL[m.breakDay]}
+                    <span style={{marginLeft:8,fontSize:11,background:m.active?"#E1F5EE":"var(--color-background-secondary)",color:m.active?"#0F6E56":"var(--color-text-tertiary)",padding:"1px 6px",borderRadius:4}}>
+                      {m.active?"Active":"Inactive"}
+                    </span>
+                  </div>
+                </div>
+                <div style={{display:"flex",gap:6,flexShrink:0}}>
+                  <button onClick={function(){setEditM(m);setMName(m.name);setMStart(m.startDay);setMBreak(m.breakDay);setView("machineForm");}} style={{fontSize:12,padding:"4px 10px"}}>Edit</button>
+                  <button onClick={function(){saveMachines(machines.map(function(x){return x.id===m.id?Object.assign({},x,{active:!x.active}):x;}));}} style={{fontSize:12,padding:"4px 10px"}}>{m.active?"Deactivate":"Activate"}</button>
+                  <button onClick={function(){saveMachines(machines.filter(function(x){return x.id!==m.id;}));}} style={{fontSize:12,padding:"4px 10px",color:"var(--color-text-danger)"}}>Delete</button>
+                </div>
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    );
+  }
+
+  // ── MACHINE FORM ──
+  if (view==="machineForm") {
+    const selStyle = {width:"100%",boxSizing:"border-box",padding:"8px",borderRadius:6,border:"0.5px solid var(--color-border-tertiary)",background:"var(--color-background-primary)",color:"var(--color-text-primary)",fontSize:13};
+    return (
+      <div style={Object.assign({},wrap,{maxWidth:480})}>
+        <Nav />
+        <div style={{display:"flex",alignItems:"center",gap:10,marginBottom:"1rem"}}>
+          <button onClick={function(){setView("machines");}} style={{fontSize:13,padding:"5px 10px"}}>← Back</button>
+          <h2 style={{fontSize:18,fontWeight:600,margin:0,color:"var(--color-text-primary)"}}>{editM?"Edit Machine":"Register Machine"}</h2>
+        </div>
+        <div style={{background:"var(--color-background-primary)",border:"0.5px solid var(--color-border-tertiary)",borderRadius:"var(--border-radius-lg)",padding:"1.25rem"}}>
+          <label style={{fontSize:13,color:"var(--color-text-secondary)",display:"block",marginBottom:6}}>Machine name / ID</label>
+          <input type="text" placeholder="e.g. Excavator #7" value={mName} onChange={function(e){setMName(e.target.value);}} style={{width:"100%",boxSizing:"border-box",marginBottom:"1.25rem"}}/>
+          <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12,marginBottom:"1.25rem"}}>
+            <div>
+              <label style={{fontSize:13,color:"var(--color-text-secondary)",display:"block",marginBottom:6}}>Start day</label>
+              <select value={mStart} onChange={function(e){setMStart(parseInt(e.target.value));}} style={selStyle}>
+                {DAY_FULL.map(function(d,i){return <option key={i} value={i}>{d}</option>;})}
+              </select>
+            </div>
+            <div>
+              <label style={{fontSize:13,color:"var(--color-text-secondary)",display:"block",marginBottom:6}}>Breaking day</label>
+              <select value={mBreak} onChange={function(e){setMBreak(parseInt(e.target.value));}} style={selStyle}>
+                {DAY_FULL.map(function(d,i){return <option key={i} value={i}>{d}</option>;})}
+              </select>
+            </div>
+          </div>
+          <div style={{background:"var(--color-background-secondary)",borderRadius:"var(--border-radius-md)",padding:"10px 12px",marginBottom:"1.25rem",fontSize:13,color:"var(--color-text-secondary)"}}>
+            Works from <strong>{DAY_FULL[mStart]}</strong> to <strong>{DAY_FULL[mBreak]}</strong> each week (6 days).
+          </div>
+          <button onClick={async function(){
+            if(!mName.trim()) return;
+            let list;
+            if(editM) { list=machines.map(function(m){return m.id===editM.id?Object.assign({},m,{name:mName.trim(),startDay:parseInt(mStart),breakDay:parseInt(mBreak)}):m;}); }
+            else { list=machines.concat([{id:Date.now().toString(),name:mName.trim(),startDay:parseInt(mStart),breakDay:parseInt(mBreak),active:true}]); }
+            await saveMachines(list); setView("machines");
+          }} disabled={!mName.trim()} style={{width:"100%",padding:"10px",fontWeight:500,fontSize:14}}>
+            {editM?"Save Changes":"Register Machine"}
           </button>
         </div>
       </div>
     );
   }
 
-  // ── HISTORY VIEW ──
-  if (view === "history") {
+  // ── REPORTS ──
+  if (view==="reports") {
+    const actM = machines.filter(function(m){return m.active;});
+    const selM = machines.find(function(m){return m.id===rMid;});
+    const selStyle = {width:"100%",boxSizing:"border-box",padding:"8px",borderRadius:6,border:"0.5px solid var(--color-border-tertiary)",background:"var(--color-background-primary)",color:"var(--color-text-primary)",fontSize:13};
     return (
-      <div style={{ padding: "1.5rem 1rem", maxWidth: 680, margin: "0 auto", fontFamily: "var(--font-sans)" }}>
-        <NavBar />
-        <h2 style={{ fontSize: 18, fontWeight: 500, margin: "0 0 1rem", color: "var(--color-text-primary)" }}>Report History</h2>
-        {historyLoading && <p style={{ color: "var(--color-text-secondary)", fontSize: 14 }}>Loading history...</p>}
-        {!historyLoading && history.length === 0 && (
-          <div style={{ textAlign: "center", padding: "3rem 0", color: "var(--color-text-tertiary)", fontSize: 14 }}>
-            <div style={{ fontSize: 32, marginBottom: 12 }}>📋</div>
-            No reports saved yet. Generate your first report!
+      <div style={wrap}>
+        <Nav />
+        <h2 style={{fontSize:18,fontWeight:600,margin:"0 0 1rem",color:"var(--color-text-primary)"}}>Generate Report</h2>
+        <div style={{background:"var(--color-background-primary)",border:"0.5px solid var(--color-border-tertiary)",borderRadius:"var(--border-radius-lg)",padding:"1.25rem",marginBottom:"1rem"}}>
+          <div style={{display:"flex",gap:6,marginBottom:"1.25rem"}}>
+            {[["daily","📅 Daily"],["weekly","📆 Weekly"],["custom","🗓 Custom"]].map(function(t){
+              const active=rType===t[0];
+              return <button key={t[0]} onClick={function(){setRType(t[0]);setRResult("");setRError("");}} style={{flex:1,padding:"7px",fontSize:13,fontWeight:active?600:400,background:active?"var(--color-background-active)":"var(--color-background-secondary)",borderRadius:6,border:"0.5px solid "+(active?"var(--color-border-secondary)":"var(--color-border-tertiary)"),cursor:"pointer"}}>{t[1]}</button>;
+            })}
+          </div>
+
+          <label style={{fontSize:13,color:"var(--color-text-secondary)",display:"block",marginBottom:6}}>Select machine</label>
+          <select value={rMid} onChange={function(e){setRMid(e.target.value);setRResult("");setRError("");}} style={Object.assign({},selStyle,{marginBottom:"1.25rem"})}>
+            <option value="">— Choose a machine —</option>
+            {actM.map(function(m){return <option key={m.id} value={m.id}>{m.name}</option>;})}
+          </select>
+
+          {rType==="daily" && (
+            <div style={{marginBottom:"1rem"}}>
+              <label style={{fontSize:13,color:"var(--color-text-secondary)",display:"block",marginBottom:6}}>Date</label>
+              <input type="date" value={rDate} onChange={function(e){setRDate(e.target.value);setRResult("");}} style={{width:"100%",boxSizing:"border-box"}}/>
+            </div>
+          )}
+
+          {rType==="weekly" && (
+            <div style={{marginBottom:"1rem"}}>
+              <label style={{fontSize:13,color:"var(--color-text-secondary)",display:"block",marginBottom:6}}>Pick any date within the week</label>
+              <input type="date" value={rDate} onChange={function(e){setRDate(e.target.value);setRResult("");}} style={{width:"100%",boxSizing:"border-box",marginBottom:6}}/>
+              {rDate&&selM&&(function(){
+                const rng=getWeekRange(selM,rDate);
+                return <div style={{fontSize:12,color:"var(--color-text-secondary)",background:"var(--color-background-secondary)",padding:"6px 10px",borderRadius:6}}>{"Week: "+fmtD(rng.start,{weekday:"short",day:"numeric",month:"short"})+" → "+fmtD(rng.end,{weekday:"short",day:"numeric",month:"short"})}</div>;
+              })()}
+            </div>
+          )}
+
+          {rType==="custom" && (
+            <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12,marginBottom:"1rem"}}>
+              <div>
+                <label style={{fontSize:13,color:"var(--color-text-secondary)",display:"block",marginBottom:6}}>From</label>
+                <input type="date" value={rFrom} onChange={function(e){setRFrom(e.target.value);setRResult("");}} style={{width:"100%",boxSizing:"border-box"}}/>
+              </div>
+              <div>
+                <label style={{fontSize:13,color:"var(--color-text-secondary)",display:"block",marginBottom:6}}>To</label>
+                <input type="date" value={rTo} onChange={function(e){setRTo(e.target.value);setRResult("");}} style={{width:"100%",boxSizing:"border-box"}}/>
+              </div>
+            </div>
+          )}
+
+          <button onClick={generateReport} disabled={!rMid||rLoading} style={{width:"100%",padding:"10px",fontWeight:500,fontSize:14}}>
+            {rLoading?"Generating...":"Generate Report ↗"}
+          </button>
+          {rError&&<p style={{fontSize:13,color:"var(--color-text-danger)",margin:"8px 0 0"}}>{rError}</p>}
+        </div>
+
+        {rLoading&&(
+          <div style={{display:"flex",alignItems:"center",gap:10,color:"var(--color-text-secondary)",fontSize:14,padding:"1rem"}}>
+            <span style={{display:"inline-block",width:14,height:14,border:"2px solid var(--color-border-secondary)",borderTopColor:"var(--color-text-secondary)",borderRadius:"50%",animation:"spin 0.8s linear infinite"}}/>
+            Analyzing data...
           </div>
         )}
-        {history.map(function(entry) {
-          const d = new Date(entry.savedAt);
-          const savedStr = d.toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric" }) + " at " + d.toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" });
+
+        {rResult&&(
+          <div style={{background:"var(--color-background-primary)",border:"0.5px solid var(--color-border-tertiary)",borderRadius:"var(--border-radius-lg)",padding:"1.25rem"}}>
+            <p style={{fontSize:13,fontWeight:500,color:"var(--color-text-secondary)",margin:"0 0 0.75rem"}}>{(rType.charAt(0).toUpperCase()+rType.slice(1))+" Report — "+(selM?selM.name:"")}</p>
+            <div style={{fontSize:14,lineHeight:1.75,color:"var(--color-text-primary)"}} dangerouslySetInnerHTML={{__html:renderMD(rResult)}}/>
+            <DownloadBar report={rResult} name={selM?selM.name:"Machine"} type={rType.charAt(0).toUpperCase()+rType.slice(1)} period={rType==="daily"?fmtD(rDate,{day:"numeric",month:"short",year:"numeric"}):rType==="weekly"&&selM?(function(){const r=getWeekRange(selM,rDate);return fmtD(r.start,{day:"numeric",month:"short"})+" – "+fmtD(r.end,{day:"numeric",month:"short",year:"numeric"});})():rFrom&&rTo?fmtD(rFrom,{day:"numeric",month:"short"})+" – "+fmtD(rTo,{day:"numeric",month:"short",year:"numeric"}):""}/>
+          </div>
+        )}
+        <style>{"@keyframes spin{to{transform:rotate(360deg);}}"}</style>
+      </div>
+    );
+  }
+
+  // ── HISTORY ──
+  if (view==="history"&&!selReport) {
+    return (
+      <div style={wrap}>
+        <Nav />
+        <h2 style={{fontSize:18,fontWeight:600,margin:"0 0 1rem",color:"var(--color-text-primary)"}}>Report History</h2>
+        {savedReports.length===0&&(
+          <div style={{textAlign:"center",padding:"3rem 0",color:"var(--color-text-tertiary)"}}>
+            <div style={{fontSize:32,marginBottom:8}}>📋</div>
+            <p style={{fontSize:14}}>No reports generated yet.</p>
+          </div>
+        )}
+        {savedReports.map(function(r) {
+          const d=new Date(r.savedAt);
+          const typeLabel=r.type==="daily"?"Daily":r.type==="weekly"?"Weekly":"Custom";
           return (
-            <div key={entry.id} style={{ background: "var(--color-background-primary)", border: "0.5px solid var(--color-border-tertiary)", borderRadius: "var(--border-radius-lg)", padding: "1rem 1.25rem", marginBottom: 10, cursor: "pointer" }}
-              onClick={function() { setSelectedEntry(entry); setView("historyDetail"); }}>
-              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
+            <div key={r.id} onClick={function(){setSelReport(r);}}
+              style={Object.assign({},card,{cursor:"pointer"})}>
+              <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start"}}>
                 <div>
-                  <div style={{ fontSize: 15, fontWeight: 500, color: "var(--color-text-primary)", marginBottom: 4 }}>{entry.machineName}</div>
-                  <div style={{ fontSize: 13, color: "var(--color-text-secondary)" }}>
-                    {new Date(entry.startDate).toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric" })}
-                    {" → "}
-                    {new Date(entry.endDate).toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric" })}
-                    {" · " + entry.weeks + " week" + (entry.weeks !== 1 ? "s" : "")}
-                  </div>
-                  <div style={{ display: "flex", gap: 8, marginTop: 6 }}>
-                    <span style={{ fontSize: 12, background: "var(--color-background-secondary)", padding: "2px 8px", borderRadius: 4, color: "var(--color-text-secondary)" }}>
-                      Total: {entry.totalHours}h
-                    </span>
-                    {entry.noWorkDays > 0 && (
-                      <span style={{ fontSize: 12, background: "#FEE9E9", color: "#9B1C1C", padding: "2px 8px", borderRadius: 4 }}>
-                        {entry.noWorkDays} no-work day{entry.noWorkDays !== 1 ? "s" : ""}
-                      </span>
-                    )}
+                  <div style={{fontSize:15,fontWeight:500,color:"var(--color-text-primary)"}}>{r.machineName}</div>
+                  <div style={{fontSize:13,color:"var(--color-text-secondary)",marginTop:3}}>
+                    <span style={{background:"var(--color-background-secondary)",padding:"1px 6px",borderRadius:4,marginRight:6,fontSize:12}}>{typeLabel}</span>
+                    {r.startDate===r.endDate?fmtD(r.startDate,{day:"numeric",month:"short",year:"numeric"}):fmtD(r.startDate,{day:"numeric",month:"short"})+" → "+fmtD(r.endDate,{day:"numeric",month:"short",year:"numeric"})}
                   </div>
                 </div>
-                <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 8 }}>
-                  <span style={{ fontSize: 11, color: "var(--color-text-tertiary)" }}>Saved {savedStr}</span>
-                  <button onClick={function(e) { e.stopPropagation(); deleteEntry(entry.id); }}
-                    style={{ fontSize: 11, padding: "2px 8px", background: "transparent", color: "var(--color-text-tertiary)", border: "0.5px solid var(--color-border-tertiary)", borderRadius: 4, cursor: "pointer" }}>
-                    Delete
-                  </button>
+                <div style={{textAlign:"right",flexShrink:0}}>
+                  <div style={{fontSize:11,color:"var(--color-text-tertiary)"}}>{d.toLocaleDateString("en-GB",{day:"numeric",month:"short"})} {d.toLocaleTimeString("en-GB",{hour:"2-digit",minute:"2-digit"})}</div>
+                  <button onClick={function(ev){
+                    ev.stopPropagation();
+                    window.storage.delete("mht_rpt:"+r.id).catch(function(){});
+                    setSavedReports(function(prev){return prev.filter(function(x){return x.id!==r.id;});});
+                  }} style={{fontSize:11,padding:"2px 8px",marginTop:4,color:"var(--color-text-tertiary)",background:"transparent",border:"0.5px solid var(--color-border-tertiary)",borderRadius:4,cursor:"pointer"}}>Delete</button>
                 </div>
               </div>
             </div>
@@ -435,331 +614,25 @@ export default function App() {
   }
 
   // ── HISTORY DETAIL ──
-  if (view === "historyDetail" && selectedEntry) {
+  if (view==="history"&&selReport) {
+    const typeLabel=selReport.type==="daily"?"Daily":selReport.type==="weekly"?"Weekly":"Custom";
     return (
-      <div style={{ padding: "1.5rem 1rem", maxWidth: 680, margin: "0 auto", fontFamily: "var(--font-sans)" }}>
-        <NavBar />
-        <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: "1.25rem" }}>
-          <button onClick={function() { setView("history"); }} style={{ fontSize: 13, padding: "6px 12px" }}>← Back</button>
+      <div style={wrap}>
+        <Nav />
+        <div style={{display:"flex",alignItems:"center",gap:10,marginBottom:"1rem"}}>
+          <button onClick={function(){setSelReport(null);}} style={{fontSize:13,padding:"5px 10px"}}>← Back</button>
           <div>
-            <div style={{ fontSize: 16, fontWeight: 500, color: "var(--color-text-primary)" }}>{selectedEntry.machineName}</div>
-            <div style={{ fontSize: 12, color: "var(--color-text-secondary)" }}>
-              {new Date(selectedEntry.startDate).toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric" })}
-              {" → "}
-              {new Date(selectedEntry.endDate).toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric" })}
-              {" · Saved " + new Date(selectedEntry.savedAt).toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric" })}
-            </div>
+            <div style={{fontSize:16,fontWeight:600,color:"var(--color-text-primary)"}}>{selReport.machineName}</div>
+            <div style={{fontSize:12,color:"var(--color-text-secondary)"}}>{typeLabel} Report · {selReport.startDate===selReport.endDate?fmtD(selReport.startDate,{day:"numeric",month:"long",year:"numeric"}):fmtD(selReport.startDate,{day:"numeric",month:"short"})+" → "+fmtD(selReport.endDate,{day:"numeric",month:"short",year:"numeric"})}</div>
           </div>
         </div>
-        <div style={{ background: "var(--color-background-primary)", border: "0.5px solid var(--color-border-tertiary)", borderRadius: "var(--border-radius-lg)", padding: "1.25rem" }}>
-          <div style={{ display: "flex", gap: 10, marginBottom: "1rem" }}>
-            {[
-              { label: "Total Hours", value: selectedEntry.totalHours + "h" },
-              { label: "Weeks", value: selectedEntry.weeks },
-              { label: "No-Work Days", value: selectedEntry.noWorkDays },
-            ].map(function(c, i) {
-              return (
-                <div key={i} style={{ flex: 1, background: "var(--color-background-secondary)", borderRadius: "var(--border-radius-md)", padding: "0.75rem" }}>
-                  <div style={{ fontSize: 11, color: "var(--color-text-secondary)", marginBottom: 3 }}>{c.label}</div>
-                  <div style={{ fontSize: 16, fontWeight: 500, color: "var(--color-text-primary)" }}>{c.value}</div>
-                </div>
-              );
-            })}
-          </div>
-          <div style={{ fontSize: 14, lineHeight: 1.75, color: "var(--color-text-primary)" }}
-            dangerouslySetInnerHTML={{ __html: renderMarkdown(selectedEntry.report) }} />
-          <div style={{ marginTop: "1rem", paddingTop: "1rem", borderTop: "0.5px solid var(--color-border-tertiary)" }}>
-            <DownloadButtons
-              report={selectedEntry.report}
-              machineName={selectedEntry.machineName}
-              period={new Date(selectedEntry.startDate).toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric" }) + " – " + new Date(selectedEntry.endDate).toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric" })}
-              totalHours={selectedEntry.totalHours}
-              weeks={selectedEntry.weeks}
-              noWorkDays={selectedEntry.noWorkDays}
-            />
-          </div>
+        <div style={{background:"var(--color-background-primary)",border:"0.5px solid var(--color-border-tertiary)",borderRadius:"var(--border-radius-lg)",padding:"1.25rem"}}>
+          <div style={{fontSize:14,lineHeight:1.75,color:"var(--color-text-primary)"}} dangerouslySetInnerHTML={{__html:renderMD(selReport.report)}}/>
+          <DownloadBar report={selReport.report} name={selReport.machineName} type={typeLabel} period={selReport.startDate===selReport.endDate?fmtD(selReport.startDate,{day:"numeric",month:"short",year:"numeric"}):fmtD(selReport.startDate,{day:"numeric",month:"short"})+" – "+fmtD(selReport.endDate,{day:"numeric",month:"short",year:"numeric"})}/>
         </div>
       </div>
     );
   }
 
-  // ── HOME ──
-  if (view === "home") {
-    return (
-      <div style={{ padding: "1.5rem 1rem", maxWidth: 680, margin: "0 auto", fontFamily: "var(--font-sans)" }}>
-        <NavBar />
-        <div style={{ textAlign: "center", padding: "2rem 0 1.5rem" }}>
-          <div style={{ fontSize: 40, marginBottom: 12 }}>⚙</div>
-          <h1 style={{ fontSize: 22, fontWeight: 600, margin: "0 0 0.5rem", color: "var(--color-text-primary)" }}>Machine Hours Tracker</h1>
-          <p style={{ fontSize: 14, color: "var(--color-text-secondary)", margin: "0 0 1.5rem" }}>Track day and night shift odometer readings, calculate billed hours, and generate AI-powered weekly reports.</p>
-          <div style={{ display: "flex", gap: 10, justifyContent: "center" }}>
-            <button onClick={function() { setView("tracker"); setStep(1); }} style={{ padding: "10px 24px", fontWeight: 500, fontSize: 14 }}>+ New Report</button>
-            {history.length > 0 && (
-              <button onClick={function() { setView("history"); }} style={{ padding: "10px 24px", fontSize: 14 }}>View History ({history.length})</button>
-            )}
-          </div>
-        </div>
-        {history.length > 0 && (
-          <div>
-            <p style={{ fontSize: 13, fontWeight: 500, color: "var(--color-text-secondary)", margin: "1.5rem 0 0.75rem" }}>Recent reports</p>
-            {history.slice(0, 3).map(function(entry) {
-              return (
-                <div key={entry.id} style={{ background: "var(--color-background-primary)", border: "0.5px solid var(--color-border-tertiary)", borderRadius: "var(--border-radius-lg)", padding: "0.875rem 1.25rem", marginBottom: 8, cursor: "pointer", display: "flex", justifyContent: "space-between", alignItems: "center" }}
-                  onClick={function() { setSelectedEntry(entry); setView("historyDetail"); }}>
-                  <div>
-                    <div style={{ fontSize: 14, fontWeight: 500, color: "var(--color-text-primary)" }}>{entry.machineName}</div>
-                    <div style={{ fontSize: 12, color: "var(--color-text-secondary)" }}>
-                      {new Date(entry.startDate).toLocaleDateString("en-GB", { day: "numeric", month: "short" })} — {new Date(entry.endDate).toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric" })}
-                      {" · " + entry.totalHours + "h total"}
-                    </div>
-                  </div>
-                  <span style={{ fontSize: 13, color: "var(--color-text-tertiary)" }}>→</span>
-                </div>
-              );
-            })}
-          </div>
-        )}
-      </div>
-    );
-  }
-
-  // ── TRACKER ──
-  return (
-    <div style={{ padding: "1.5rem 1rem", maxWidth: 700, margin: "0 auto", fontFamily: "var(--font-sans)" }}>
-      <NavBar />
-
-      {step === 1 && (
-        <div style={{ maxWidth: 480, margin: "0 auto" }}>
-          <h2 style={{ fontSize: 18, fontWeight: 500, margin: "0 0 0.25rem", color: "var(--color-text-primary)" }}>New Report</h2>
-          <p style={{ fontSize: 14, color: "var(--color-text-secondary)", margin: "0 0 1.5rem" }}>Enter the machine details and working period.</p>
-          <div style={{ background: "var(--color-background-primary)", border: "0.5px solid var(--color-border-tertiary)", borderRadius: "var(--border-radius-lg)", padding: "1.25rem" }}>
-            <label style={{ fontSize: 13, color: "var(--color-text-secondary)", display: "block", marginBottom: 6 }}>Machine name / ID</label>
-            <input type="text" placeholder="e.g. Excavator #7" value={machineName}
-              onChange={function(e) { setMachineName(e.target.value); }}
-              style={{ width: "100%", boxSizing: "border-box", marginBottom: "1.25rem" }} />
-            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginBottom: "1.25rem" }}>
-              <div>
-                <label style={{ fontSize: 13, color: "var(--color-text-secondary)", display: "block", marginBottom: 6 }}>Start date</label>
-                <input type="date" value={startDate} onChange={function(e) { setStartDate(e.target.value); }} style={{ width: "100%", boxSizing: "border-box" }} />
-              </div>
-              <div>
-                <label style={{ fontSize: 13, color: "var(--color-text-secondary)", display: "block", marginBottom: 6 }}>End date</label>
-                <input type="date" value={endDate} onChange={function(e) { setEndDate(e.target.value); }}
-                  style={{ width: "100%", boxSizing: "border-box", borderColor: dateError ? "var(--color-border-danger)" : undefined }} />
-              </div>
-            </div>
-            {dateError && <p style={{ fontSize: 12, color: "var(--color-text-danger)", margin: "-8px 0 12px" }}>{dateError}</p>}
-            {tooMany && <p style={{ fontSize: 12, color: "var(--color-text-danger)", margin: "-8px 0 12px" }}>Please select 31 days or fewer.</p>}
-            {(dayCount > 0 && !tooMany && !dateError) && (
-              <div style={{ background: "var(--color-background-secondary)", borderRadius: "var(--border-radius-md)", padding: "10px 12px", marginBottom: "1.25rem", fontSize: 13, color: "var(--color-text-secondary)" }}>
-                {"📅 "}
-                <strong style={{ color: "var(--color-text-primary)" }}>{dayCount} day{dayCount > 1 ? "s" : ""}</strong>
-                {" (" + Math.ceil(dayCount / 6) + " week" + (Math.ceil(dayCount / 6) > 1 ? "s" : "") + ") — "}
-                {new Date(startDate).toLocaleDateString("en-GB", { weekday: "long", day: "numeric", month: "short" })}
-                {" to "}
-                {new Date(endDate).toLocaleDateString("en-GB", { weekday: "long", day: "numeric", month: "short" })}
-              </div>
-            )}
-            <button onClick={handleProceed} disabled={!startDate || !endDate || !!dateError || tooMany || dayCount === 0}
-              style={{ width: "100%", padding: "10px", fontWeight: 500, fontSize: 14 }}>
-              Continue → Enter odometer readings
-            </button>
-          </div>
-        </div>
-      )}
-
-      {step === 2 && (
-        <>
-          <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", marginBottom: "1.25rem" }}>
-            <div>
-              <h2 style={{ fontSize: 18, fontWeight: 500, margin: "0 0 0.25rem", color: "var(--color-text-primary)" }}>{machineName || "Unnamed Machine"}</h2>
-              <p style={{ fontSize: 13, color: "var(--color-text-secondary)", margin: 0 }}>
-                {new Date(startDate).toLocaleDateString("en-GB", { weekday: "short", day: "numeric", month: "short", year: "numeric" })}
-                {" → "}
-                {new Date(endDate).toLocaleDateString("en-GB", { weekday: "short", day: "numeric", month: "short", year: "numeric" })}
-                {" · " + days.length + " days · " + Math.ceil(days.length / 6) + " week" + (Math.ceil(days.length / 6) > 1 ? "s" : "")}
-              </p>
-            </div>
-            <button onClick={function() { setStep(1); setSubmitted(false); setReport(""); }} style={{ fontSize: 13, padding: "6px 12px" }}>← Change period</button>
-          </div>
-
-          <div style={{ background: "var(--color-background-primary)", border: "0.5px solid var(--color-border-tertiary)", borderRadius: "var(--border-radius-lg)", padding: "1.25rem", marginBottom: "1.25rem" }}>
-            <div style={{ display: "grid", gridTemplateColumns: "80px 1fr 1fr 12px 1fr 1fr 90px", gap: "4px 8px", marginBottom: 8 }}>
-              <span />
-              <span style={{ fontSize: 11, color: "#A0752B", textAlign: "center", background: "#FDF3E1", borderRadius: 4, padding: "2px 0" }}>☀ Day start</span>
-              <span style={{ fontSize: 11, color: "#A0752B", textAlign: "center", background: "#FDF3E1", borderRadius: 4, padding: "2px 0" }}>☀ Day end</span>
-              <span />
-              <span style={{ fontSize: 11, color: "#4640A0", textAlign: "center", background: "#EEEDFE", borderRadius: 4, padding: "2px 0" }}>☾ Night start</span>
-              <span style={{ fontSize: 11, color: "#4640A0", textAlign: "center", background: "#EEEDFE", borderRadius: 4, padding: "2px 0" }}>☾ Night end</span>
-              <span style={{ fontSize: 11, color: "var(--color-text-tertiary)", textAlign: "right" }}>Total</span>
-            </div>
-
-            {rows.map(function(r, i) {
-              const dh = dayHours[i], nh = nightHours[i], tot = totalPerDay[i];
-              const db = dayBilled[i], nb = nightBilled[i];
-              const dErr = hasErr(i, "day"), nErr = hasErr(i, "night");
-              const d = days[i];
-              const isWeekend = d.getDay() === 0 || d.getDay() === 6;
-              const isNewWeek = i > 0 && i % 6 === 0;
-              return (
-                <div key={i} style={{ marginBottom: 10, paddingTop: i > 0 ? 8 : 0, borderTop: isNewWeek ? "2px solid var(--color-border-secondary)" : i > 0 ? "0.5px solid var(--color-border-tertiary)" : "none" }}>
-                  {(i === 0 || isNewWeek) && (
-                    <div style={{ fontSize: 11, fontWeight: 600, color: "var(--color-text-tertiary)", marginBottom: 6, letterSpacing: "0.05em" }}>
-                      {"WEEK " + (Math.floor(i / 6) + 1)}
-                    </div>
-                  )}
-                  <div style={{ display: "grid", gridTemplateColumns: "80px 1fr 1fr 12px 1fr 1fr 90px", gap: "4px 8px", alignItems: "center" }}>
-                    <div>
-                      <div style={{ fontSize: 13, fontWeight: 500, color: isWeekend ? "var(--color-text-secondary)" : "var(--color-text-primary)" }}>{DAY_NAMES[d.getDay()]}</div>
-                      <div style={{ fontSize: 11, color: "var(--color-text-tertiary)" }}>{fmtDate(d, { day: "numeric", month: "short" })}</div>
-                    </div>
-                    {r.noWork ? (
-                      <div style={{ gridColumn: "2 / 7", display: "flex", alignItems: "center", gap: 8 }}>
-                        <span style={{ fontSize: 12, background: "#FEE9E9", color: "#9B1C1C", padding: "2px 8px", borderRadius: 4, fontWeight: 500, whiteSpace: "nowrap" }}>No Work</span>
-                        <input type="text" placeholder="Reason (e.g. breakdown, holiday...)" value={r.reason}
-                          onChange={function(e) { setReason(i, e.target.value); }}
-                          style={{ flex: 1, fontSize: 13, boxSizing: "border-box" }} />
-                      </div>
-                    ) : (
-                      <>
-                        <input type="text" inputMode="decimal" placeholder="0.0" value={r.dayStart} onChange={function(e) { setField(i, "dayStart", e.target.value); }} style={inputSm(dErr)} />
-                        <input type="text" inputMode="decimal" placeholder="0.0" value={r.dayEnd} onChange={function(e) { setField(i, "dayEnd", e.target.value); }} style={inputSm(dErr)} />
-                        <div style={{ width: 1, background: "var(--color-border-tertiary)", height: 28, margin: "0 auto" }} />
-                        <input type="text" inputMode="decimal" placeholder="0.0" value={r.nightStart} onChange={function(e) { setField(i, "nightStart", e.target.value); }} style={inputSm(nErr)} />
-                        <input type="text" inputMode="decimal" placeholder="0.0" value={r.nightEnd} onChange={function(e) { setField(i, "nightEnd", e.target.value); }} style={inputSm(nErr)} />
-                      </>
-                    )}
-                    <div style={{ textAlign: "right" }}>
-                      {r.noWork ? <span style={{ fontSize: 11, color: "#9B1C1C" }}>—</span>
-                        : (dErr || nErr) ? <span style={{ fontSize: 11, color: "var(--color-text-danger)" }}>error</span>
-                        : tot !== null ? <span style={{ fontSize: 13, fontWeight: 500 }}>{fmt(tot)}</span>
-                        : <span style={{ fontSize: 13, color: "var(--color-text-tertiary)" }}>—</span>}
-                    </div>
-                  </div>
-                  <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginTop: 4 }}>
-                    {!r.noWork ? (
-                      <div style={{ display: "grid", gridTemplateColumns: "80px 1fr 1fr 12px 1fr 1fr 90px", gap: "2px 8px", flex: 1 }}>
-                        <span />
-                        <span style={{ gridColumn: "2 / 4", fontSize: 11, color: dErr ? "var(--color-text-danger)" : "var(--color-text-tertiary)", paddingLeft: 2 }}>
-                          {dErr ? "end < start" : dh !== null ? ("= " + fmt(dh) + " / billed " + db + "h") : ""}
-                        </span>
-                        <span />
-                        <span style={{ gridColumn: "5 / 7", fontSize: 11, color: nErr ? "var(--color-text-danger)" : "var(--color-text-tertiary)", paddingLeft: 2 }}>
-                          {nErr ? "end < start" : nh !== null ? ("= " + fmt(nh) + " / billed " + nb + "h") : ""}
-                        </span>
-                        <span />
-                      </div>
-                    ) : <div style={{ flex: 1 }} />}
-                    <button onClick={function() { toggleNoWork(i); }}
-                      style={{ fontSize: 11, padding: "2px 8px", marginLeft: 8, background: r.noWork ? "#FEE9E9" : "var(--color-background-secondary)", color: r.noWork ? "#9B1C1C" : "var(--color-text-secondary)", border: "0.5px solid " + (r.noWork ? "#FECACA" : "var(--color-border-tertiary)"), borderRadius: 4, cursor: "pointer", whiteSpace: "nowrap" }}>
-                      {r.noWork ? "Undo" : "No work"}
-                    </button>
-                  </div>
-                </div>
-              );
-            })}
-
-            <div style={{ display: "flex", gap: 10, marginTop: "1.25rem" }}>
-              <button onClick={generateReport} disabled={!canGenerate || loading} style={{ flex: 1, padding: "10px", fontWeight: 500, fontSize: 14 }}>
-                {loading ? "Generating report..." : "Generate AI report ↗"}
-              </button>
-              <button onClick={function() { setRows(days.map(emptyRow)); setReport(""); setSubmitted(false); }} style={{ padding: "10px 16px", fontSize: 14 }}>Reset</button>
-            </div>
-            {!canGenerate && <p style={{ fontSize: 12, color: "var(--color-text-tertiary)", margin: "8px 0 0" }}>Enter at least one day's readings to generate a report.</p>}
-          </div>
-
-          {submitted && filledDays.length > 0 && (
-            <div style={{ marginBottom: "1.25rem" }}>
-              <div style={{ background: "var(--color-background-primary)", border: "0.5px solid var(--color-border-tertiary)", borderRadius: "var(--border-radius-lg)", padding: "1.25rem", marginBottom: "1.25rem" }}>
-                <p style={{ fontSize: 13, fontWeight: 500, color: "var(--color-text-secondary)", margin: "0 0 1rem" }}>Daily hours breakdown</p>
-                <div style={{ display: "flex", alignItems: "flex-end", gap: days.length > 14 ? 4 : 8, height: 140 }}>
-                  {totalPerDay.map(function(tot, i) {
-                    const dh = dayHours[i] || 0, nh = nightHours[i] || 0, t = tot || 0;
-                    const pct = maxBar > 0 ? (t / maxBar) * 100 : 0;
-                    const dPct = t > 0 ? (dh / t) * 100 : 50;
-                    const isNoWork = rows[i].noWork;
-                    return (
-                      <div key={i} style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", height: "100%", justifyContent: "flex-end" }}>
-                        {days.length <= 14 && <span style={{ fontSize: 10, color: "var(--color-text-secondary)", marginBottom: 3 }}>{isNoWork ? "—" : t > 0 ? t.toFixed(1) : ""}</span>}
-                        <div style={{ width: "100%", height: Math.max(isNoWork ? 8 : pct, 2) + "%", borderRadius: "3px 3px 0 0", overflow: "hidden", background: isNoWork ? "#FEE9E9" : t === 0 ? "var(--color-border-tertiary)" : undefined }}>
-                          {(!isNoWork && t > 0) && (
-                            <>
-                              <div style={{ width: "100%", height: dPct + "%", background: "#EF9F27" }} />
-                              <div style={{ width: "100%", height: (100 - dPct) + "%", background: "#534AB7" }} />
-                            </>
-                          )}
-                        </div>
-                      </div>
-                    );
-                  })}
-                </div>
-                <div style={{ display: "flex", gap: days.length > 14 ? 4 : 8, marginTop: 6 }}>
-                  {days.map(function(d, i) {
-                    return <div key={i} style={{ flex: 1, textAlign: "center", fontSize: days.length > 14 ? 9 : 11, color: "var(--color-text-secondary)" }}>{days.length > 14 ? d.getDate() : DAY_NAMES[d.getDay()]}</div>;
-                  })}
-                </div>
-                <div style={{ display: "flex", gap: 16, marginTop: 10 }}>
-                  {[["#EF9F27", "Day shift"], ["#534AB7", "Night shift"], ["#FEE9E9", "No work"]].map(function(item) {
-                    return (
-                      <span key={item[1]} style={{ display: "flex", alignItems: "center", gap: 5, fontSize: 12, color: "var(--color-text-secondary)" }}>
-                        <span style={{ width: 10, height: 10, borderRadius: 2, background: item[0], border: "0.5px solid var(--color-border-tertiary)", display: "inline-block" }} />{item[1]}
-                      </span>
-                    );
-                  })}
-                </div>
-              </div>
-              <div style={{ display: "grid", gridTemplateColumns: "repeat(4, minmax(0,1fr))", gap: 10 }}>
-                {[
-                  { label: "Period total", value: fmt(grandTotal) },
-                  { label: "Daily average", value: fmt(avg) },
-                  { label: "Peak day", value: peakDayLabel + " · " + fmt(peak) },
-                  { label: "No-work days", value: rows.filter(function(r) { return r.noWork; }).length + " day" + (rows.filter(function(r) { return r.noWork; }).length !== 1 ? "s" : "") },
-                ].map(function(c, i) {
-                  return (
-                    <div key={i} style={{ background: "var(--color-background-secondary)", borderRadius: "var(--border-radius-md)", padding: "0.875rem 0.75rem" }}>
-                      <div style={{ fontSize: 12, color: "var(--color-text-secondary)", marginBottom: 4 }}>{c.label}</div>
-                      <div style={{ fontSize: 14, fontWeight: 500, color: "var(--color-text-primary)" }}>{c.value}</div>
-                    </div>
-                  );
-                })}
-              </div>
-            </div>
-          )}
-
-          {(loading || report || error) && (
-            <div ref={reportRef} style={{ background: "var(--color-background-primary)", border: "0.5px solid var(--color-border-tertiary)", borderRadius: "var(--border-radius-lg)", padding: "1.25rem" }}>
-              <p style={{ fontSize: 13, fontWeight: 500, color: "var(--color-text-secondary)", margin: "0 0 0.75rem" }}>
-                {"AI-generated report — " + (machineName || "Unnamed Machine")}
-              </p>
-              {loading && (
-                <div style={{ display: "flex", alignItems: "center", gap: 10, color: "var(--color-text-secondary)", fontSize: 14 }}>
-                  <span style={{ display: "inline-block", width: 14, height: 14, border: "2px solid var(--color-border-secondary)", borderTopColor: "var(--color-text-secondary)", borderRadius: "50%", animation: "spin 0.8s linear infinite" }} />
-                  Analyzing data...
-                </div>
-              )}
-              {error && <p style={{ color: "var(--color-text-danger)", fontSize: 14 }}>{error}</p>}
-              {report && (
-                <div>
-                  <div style={{ fontSize: 14, lineHeight: 1.75, color: "var(--color-text-primary)" }} dangerouslySetInnerHTML={{ __html: renderMarkdown(report) }} />
-                  <div style={{ marginTop: "1rem", paddingTop: "1rem", borderTop: "0.5px solid var(--color-border-tertiary)", display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center", justifyContent: "space-between" }}>
-                    <DownloadButtons
-                      report={report}
-                      machineName={machineName || "Unnamed Machine"}
-                      period={new Date(startDate).toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric" }) + " – " + new Date(endDate).toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric" })}
-                      totalHours={grandTotal.toFixed(2)}
-                      weeks={Math.ceil(days.length / 6)}
-                      noWorkDays={rows.filter(function(r) { return r.noWork; }).length}
-                    />
-                    <button onClick={function() { setView("history"); }} style={{ fontSize: 13, padding: "6px 14px" }}>View in History →</button>
-                  </div>
-                </div>
-              )}
-            </div>
-          )}
-        </>
-      )}
-
-      <style>{"@keyframes spin { to { transform: rotate(360deg); } }"}</style>
-    </div>
-  );
+  return null;
 }
