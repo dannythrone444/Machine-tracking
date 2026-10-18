@@ -1,531 +1,673 @@
-import { useState, useEffect } from "react";
+import React, { useState, useEffect } from 'react';
 
-// ── OFFLINE QUEUE ────────────────────────────────────────────────
-const QK = "mht_q";
-const offQ = {
-  add(key, val) { try { const q = JSON.parse(localStorage.getItem(QK)||"[]").filter(function(i){return i.k!==key;}); q.push({k:key,v:val}); localStorage.setItem(QK,JSON.stringify(q)); } catch(e) {} },
-  get() { try { return JSON.parse(localStorage.getItem(QK)||"[]"); } catch(e) { return []; } },
-  remove(key) { try { const q = JSON.parse(localStorage.getItem(QK)||"[]").filter(function(i){return i.k!==key;}); localStorage.setItem(QK,JSON.stringify(q)); } catch(e) {} },
-  count() { return this.get().length; }
+// ─── Storage helpers ─────────────────────────────────────────────────────────
+function storageGet(key) {
+  try { if (window.storage) return window.storage.getItem(key); } catch (_) {}
+  try { return localStorage.getItem('mht_l:' + key); } catch (_) { return null; }
+}
+function storageSet(key, value) {
+  try { if (window.storage) window.storage.setItem(key, value); } catch (_) {}
+  try { localStorage.setItem('mht_l:' + key, value); } catch (_) {}
+}
+function lsGet(key) { try { return localStorage.getItem(key); } catch (_) { return null; } }
+function lsSet(key, value) { try { localStorage.setItem(key, value); } catch (_) {} }
+
+// ─── Date helpers ─────────────────────────────────────────────────────────────
+const DAY_ABBR = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
+const MON_ABBR = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+
+function fmtShort(dateStr) {
+  const d = new Date(dateStr + 'T00:00:00');
+  return DAY_ABBR[d.getDay()] + ' ' + d.getDate() + ' ' + MON_ABBR[d.getMonth()];
+}
+function fmtLong(dateStr) {
+  const d = new Date(dateStr + 'T00:00:00');
+  return DAY_ABBR[d.getDay()] + ', ' + d.getDate() + ' ' + MON_ABBR[d.getMonth()] + ' ' + d.getFullYear();
+}
+function datesBetween(from, to) {
+  const list = [];
+  const cur = new Date(from + 'T00:00:00');
+  const end = new Date(to + 'T00:00:00');
+  while (cur <= end) { list.push(cur.toISOString().slice(0,10)); cur.setDate(cur.getDate()+1); }
+  return list;
+}
+function todayStr() { return new Date().toISOString().slice(0,10); }
+
+// ─── Business logic ───────────────────────────────────────────────────────────
+function calcBilled(start, end) {
+  const diff = parseFloat(end) - parseFloat(start);
+  if (!diff || diff <= 0) return 0;
+  return Math.round(diff);
+}
+
+// ─── Weekly section builder (format locked — not sent to AI) ─────────────────
+function buildWeeklySection(entries) {
+  const sorted = [...entries].sort((a, b) => a.date.localeCompare(b.date));
+  const weeks = [];
+  for (let i = 0; i < sorted.length; i += 6) weeks.push(sorted.slice(i, i + 6));
+
+  let out = '2. Weekly Report\n\n';
+
+  weeks.forEach((week, wi) => {
+    const first = fmtShort(week[0].date);
+    const last  = fmtShort(week[week.length - 1].date);
+    out += 'Week ' + (wi + 1) + ' (' + first + ' – ' + last + ')\n\n';
+
+    // Day shifts
+    out += '#### Day Shifts\n';
+    let dayTotal = 0;
+    week.forEach(e => {
+      if (e.noWork) { out += '• ' + fmtShort(e.date) + ': NO WORK\n'; return; }
+      const b = calcBilled(e.dayStart, e.dayEnd);
+      dayTotal += b;
+      out += '• ' + fmtShort(e.date) + ': ' + b + 'h (' + e.dayStart + ' → ' + e.dayEnd + ')\n';
+    });
+    out += '\nTotal Day Shift: ' + dayTotal + 'h\n';
+
+    // Night shifts
+    out += '#### Night Shifts\n';
+    let nightTotal = 0;
+    week.forEach(e => {
+      if (e.noWork) { out += '• ' + fmtShort(e.date) + ': NO WORK\n'; return; }
+      const b = calcBilled(e.nightStart, e.nightEnd);
+      nightTotal += b;
+      out += '• ' + fmtShort(e.date) + ': ' + b + 'h (' + e.nightStart + ' → ' + e.nightEnd + ')\n';
+    });
+    out += '\nTotal Night Shift: ' + nightTotal + 'h\n';
+
+    // Totals
+    out += '#### Weekly Totals\n';
+    out += '• Day Shift: ' + dayTotal + 'h\n';
+    out += '• Night Shift: ' + nightTotal + 'h\n';
+    out += '• Combined Week Total: ' + (dayTotal + nightTotal) + 'h\n\n---\n\n';
+  });
+
+  return out;
+}
+
+// ─── Daily section builder ────────────────────────────────────────────────────
+function buildDailySection(entries) {
+  const sorted = [...entries].sort((a, b) => a.date.localeCompare(b.date));
+  let out = '1. Daily Report\n\n';
+  sorted.forEach(e => {
+    out += fmtLong(e.date) + '\n';
+    if (e.noWork) {
+      out += '  No Work—' + (e.noWorkReason || 'No reason given') + '\n\n';
+      return;
+    }
+    const dayActual = ((parseFloat(e.dayEnd)||0) - (parseFloat(e.dayStart)||0)).toFixed(1);
+    const dayBilled = calcBilled(e.dayStart, e.dayEnd);
+    const nightActual = ((parseFloat(e.nightEnd)||0) - (parseFloat(e.nightStart)||0)).toFixed(1);
+    const nightBilled = calcBilled(e.nightStart, e.nightEnd);
+    out += '  Day Shift:   Start ' + (e.dayStart||'—') + '  End ' + (e.dayEnd||'—') + '  |  Actual: ' + dayActual + 'h  |  Billed: ' + dayBilled + 'h\n';
+    out += '  Night Shift: Start ' + (e.nightStart||'—') + '  End ' + (e.nightEnd||'—') + '  |  Actual: ' + nightActual + 'h  |  Billed: ' + nightBilled + 'h\n\n';
+  });
+  return out;
+}
+
+// ─── Report generation ────────────────────────────────────────────────────────
+async function generateReport(entries, machine, dateLabel) {
+  const dailySection  = buildDailySection(entries);
+  const weeklySection = buildWeeklySection(entries);
+
+  const noWorkDays = entries.filter(e => e.noWork).length;
+  const totalDayH  = entries.reduce((s, e) => s + calcBilled(e.dayStart, e.dayEnd), 0);
+  const totalNightH = entries.reduce((s, e) => s + calcBilled(e.nightStart, e.nightEnd), 0);
+
+  const prompt =
+    'You are generating a machine hours report for ' + machine.name + '. Period: ' + dateLabel + '.\n\n' +
+    'Output the report in EXACTLY three numbered sections.\n\n' +
+    'SECTION 1 and SECTION 2 are pre-built below — copy them character-for-character, do not alter any number, date, arrow, bullet or heading.\n\n' +
+    dailySection + '\n' +
+    weeklySection +
+    '3. Overall Summary\n' +
+    'Write exactly 2–3 sentences. Facts to mention: total day hours = ' + totalDayH + 'h, total night hours = ' + totalNightH + 'h, combined = ' + (totalDayH + totalNightH) + 'h, no-work days = ' + noWorkDays + '. Note any patterns (consistent output, high/low days). Be concise and professional. Do not repeat section headings.';
+
+  const res = await fetch('/api/generate', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ messages: [{ role: 'user', content: prompt }], max_tokens: 2400 })
+  });
+  if (!res.ok) throw new Error('API error ' + res.status);
+  const data = await res.json();
+  const text = data.content?.[0]?.text || '';
+  if (!text) throw new Error('Empty response from AI');
+  return text;
+}
+
+// ─── Styles ───────────────────────────────────────────────────────────────────
+const C = {
+  bg:      '#0f172a',
+  surface: '#1e293b',
+  border:  '#334155',
+  text:    '#e2e8f0',
+  muted:   '#94a3b8',
+  dim:     '#475569',
+  blue:    '#3b82f6',
+  green:   '#22c55e',
+  red:     '#ef4444',
+  amber:   '#f59e0b',
 };
 
-// ── STORAGE ───────────────────────────────────────────────────────
-const store = {
-  async get(key) {
-    if (typeof window !== "undefined" && window.storage) {
-      try { const r = await window.storage.get(key, true); if (r) return r; } catch(e) {}
-    }
-    const v = localStorage.getItem("mht_l:" + key);
-    return v ? { value: v } : null;
+const S = {
+  app:   { minHeight: '100vh', background: C.bg, color: C.text, fontFamily: "'Inter', system-ui, sans-serif", paddingBottom: 88 },
+  hdr:   { background: C.surface, borderBottom: '1px solid ' + C.border, padding: '12px 16px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', position: 'sticky', top: 0, zIndex: 100 },
+  nav:   { position: 'fixed', bottom: 0, left: 0, right: 0, background: C.surface, borderTop: '1px solid ' + C.border, display: 'flex', zIndex: 100 },
+  page:  { padding: '0 16px 16px' },
+  card:  { background: C.surface, borderRadius: 12, padding: 16, marginBottom: 12, border: '1px solid ' + C.border },
+  row:   { display: 'flex', gap: 8 },
+  flex:  { display: 'flex', alignItems: 'center', justifyContent: 'space-between' },
+  label: { fontSize: 12, color: C.muted, marginBottom: 4, display: 'block' },
+  tag:   { fontSize: 11, color: C.dim },
+  input: { width: '100%', padding: '10px 12px', background: C.bg, border: '1px solid ' + C.border, borderRadius: 8, color: C.text, fontSize: 14, boxSizing: 'border-box', marginBottom: 10, fontFamily: 'inherit' },
+  btn: function(v) {
+    const bg = v === 'primary' ? C.blue : v === 'danger' ? C.red : v === 'success' ? C.green : C.border;
+    return { padding: '12px 16px', borderRadius: 8, border: 'none', cursor: 'pointer', fontWeight: 600, fontSize: 14, background: bg, color: '#fff', width: '100%', marginBottom: 8, fontFamily: 'inherit' };
   },
-  async set(key, val) {
-    try { localStorage.setItem("mht_l:" + key, val); } catch(e) {}
-    if (typeof window !== "undefined" && window.storage) {
-      try { await window.storage.set(key, val, true); return true; } catch(e) {}
-    }
-    offQ.add(key, val); return false;
+  navBtn: function(active) {
+    return { flex: 1, padding: '10px 4px 8px', background: 'none', border: 'none', color: active ? C.blue : C.dim, fontSize: 10, cursor: 'pointer', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 3, fontFamily: 'inherit' };
   },
-  async delete(key) {
-    try { localStorage.removeItem("mht_l:" + key); } catch(e) {}
-    if (typeof window !== "undefined" && window.storage) {
-      try { await window.storage.delete(key, true); } catch(e) {}
-    }
+  badge: function(color) {
+    const bg   = color === 'green' ? '#14532d' : color === 'red' ? '#7f1d1d' : '#1e3a5f';
+    const text = color === 'green' ? '#86efac' : color === 'red' ? '#fca5a5' : '#93c5fd';
+    return { display: 'inline-block', padding: '3px 9px', borderRadius: 99, fontSize: 11, fontWeight: 600, background: bg, color: text };
   },
-  async list(prefix) {
-    if (typeof window !== "undefined" && window.storage) {
-      try { return await window.storage.list(prefix, true); } catch(e) {}
-    }
-    const keys = Object.keys(localStorage)
-      .filter(function(k) { return k.startsWith("mht_l:" + prefix); })
-      .map(function(k) { return k.replace("mht_l:", ""); });
-    return { keys };
-  }
+  billedBox: { padding: '10px 12px', background: C.bg, border: '1px solid ' + C.border, borderRadius: 8, fontSize: 14, color: C.green, marginBottom: 10, textAlign: 'center' },
 };
 
-// ── NOTIFICATIONS ─────────────────────────────────────────────────
-const NK = "mht_notif";
-function getNotifCfg() { try { return JSON.parse(localStorage.getItem(NK) || '{"enabled":false,"dayTime":"18:00","nightTime":"06:00"}'); } catch(e) { return { enabled: false, dayTime: "18:00", nightTime: "06:00" }; } }
-function saveNotifCfg(s) { localStorage.setItem(NK, JSON.stringify(s)); }
-let ntTimers = [];
-function clearNtTimers() { ntTimers.forEach(clearTimeout); ntTimers = []; }
-function scheduleNotifs(cfg) {
-  clearNtTimers();
-  if (!cfg.enabled || !("Notification" in window) || Notification.permission !== "granted") return;
-  function at(time, title, body) {
-    const [h, m] = time.split(":").map(Number);
-    const now = new Date(), tgt = new Date();
-    tgt.setHours(h, m, 0, 0);
-    if (tgt <= now) tgt.setDate(tgt.getDate() + 1);
-    const t = setTimeout(function() { new Notification(title, { body }); at(time, title, body); }, tgt - now);
-    ntTimers.push(t);
-  }
-  at(cfg.dayTime, "☀ Day Shift Reminder", "Enter today's day shift odometer readings.");
-  at(cfg.nightTime, "☾ Night Shift Reminder", "Enter tonight's night shift odometer readings.");
-}
-
-// ── UTILS ─────────────────────────────────────────────────────────
-const DAY_NAMES = ["Sun","Mon","Tue","Wed","Thu","Fri","Sat"];
-const DAY_FULL  = ["Sunday","Monday","Tuesday","Wednesday","Thursday","Friday","Saturday"];
-function calcH(s, e) { const a = parseFloat(s), b = parseFloat(e); if (isNaN(a)||isNaN(b)||b<a) return null; return parseFloat((b-a).toFixed(2)); }
-function billH(h) { if (h === null) return null; const m = Math.round((h - Math.floor(h)) * 60); return m >= 30 ? Math.ceil(h) : Math.floor(h); }
-function fmt(h) { if (h === null || h === undefined) return "—"; const hr = Math.floor(h), m = Math.round((h-hr)*60); return m > 0 ? (hr+"h "+m+"m") : (hr+"h"); }
-function todayStr() { return new Date().toISOString().split("T")[0]; }
-function fmtD(s, opts) { return new Date(s+"T12:00:00").toLocaleDateString("en-GB", opts); }
-function emptyRow() { return { dayStart:"", dayEnd:"", nightStart:"", nightEnd:"", noWork:false, reason:"" }; }
-function buildDays(from, to) { const days=[], cur=new Date(from+"T12:00:00"), last=new Date(to+"T12:00:00"); while(cur<=last){ days.push(cur.toISOString().split("T")[0]); cur.setDate(cur.getDate()+1); } return days; }
-
-function renderMD(t) {
-  return t
-    .replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>")
-    .replace(/^### (.+)$/gm, "<h3 style=\"font-size:14px;font-weight:600;margin:1rem 0 0.2rem\">$1</h3>")
-    .replace(/^## (.+)$/gm, "<h2 style=\"font-size:16px;font-weight:600;margin:1.5rem 0 0.4rem;border-bottom:1px solid #ddd;padding-bottom:4px\">$1</h2>")
-    .replace(/^- (.+)$/gm, "<div style=\"padding-left:1rem;margin:0.15rem 0\">• $1</div>")
-    .replace(/\n\n/g, "<br/>").replace(/\n/g, " ");
-}
-
-function buildPrint(report, meta) {
-  const body = report.replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;")
-    .replace(/\*\*(.+?)\*\*/g,"<strong>$1</strong>")
-    .replace(/^### (.+)$/gm,"<h3>$1</h3>").replace(/^## (.+)$/gm,"<h2>$1</h2>")
-    .replace(/^- (.+)$/gm,"<li>$1</li>").replace(/\n\n/g,"</p><p>").replace(/\n/g," ");
-  return "<!DOCTYPE html><html><head><meta charset='utf-8'/><title>"+meta.name+"</title><style>body{font-family:Georgia,serif;max-width:800px;margin:40px auto;padding:0 32px;color:#111;font-size:14px;line-height:1.8}h1{font-size:22px}h2{font-size:17px;font-weight:600;margin:2rem 0 .5rem;border-bottom:1px solid #ddd;padding-bottom:4px}h3{font-size:14px;font-weight:600;margin:1.25rem 0 .25rem}li{margin:.15rem 0}p{margin:.4rem 0}.hdr{border-bottom:2px solid #111;padding-bottom:12px;margin-bottom:24px}.badge{display:inline-block;background:#f3f3f3;border:1px solid #ddd;border-radius:4px;padding:2px 10px;font-size:12px;margin-right:8px}.foot{margin-top:40px;padding-top:12px;border-top:1px solid #ddd;font-size:11px;color:#999}</style></head><body>"
-    +"<div class='hdr'><h1>"+meta.name+"</h1><div style='font-size:13px;color:#555;margin-top:4px'><span class='badge'>"+meta.type+"</span><span class='badge'>📅 "+meta.period+"</span></div></div><p>"+body+"</p>"
-    +"<div class='foot'>Machine Hours Tracker · "+new Date().toLocaleDateString("en-GB",{day:"numeric",month:"long",year:"numeric"})+"</div></body></html>";
-}
-
-function DownloadBar(props) {
-  const [busy, setBusy] = useState(false);
-  function doPDF() {
-    const w = window.open("","_blank");
-    if (!w) { alert("Allow pop-ups."); return; }
-    w.document.write(buildPrint(props.report, props));
-    w.document.close(); w.focus();
-    setTimeout(function() { w.print(); }, 400);
-  }
-  function doImg() {
-    setBusy(true);
-    const W=860, H=1300, html=buildPrint(props.report, props);
-    const svg="<svg xmlns='http://www.w3.org/2000/svg' width='"+W+"' height='"+H+"'><foreignObject width='100%' height='100%'><div xmlns='http://www.w3.org/1999/xhtml' style='background:#fff;width:"+W+"px;min-height:"+H+"px'>"+html+"</div></foreignObject></svg>";
-    const blob=new Blob([svg],{type:"image/svg+xml"});
-    const url=URL.createObjectURL(blob);
-    const img=new Image();
-    img.onload=function(){
-      const c=document.createElement("canvas"); c.width=W; c.height=H;
-      const ctx=c.getContext("2d"); ctx.fillStyle="#fff"; ctx.fillRect(0,0,W,H); ctx.drawImage(img,0,0);
-      URL.revokeObjectURL(url);
-      const a=document.createElement("a"); a.download=props.name.replace(/\s+/g,"_")+".png"; a.href=c.toDataURL("image/png"); a.click();
-      setBusy(false);
-    };
-    img.onerror=function(){ URL.revokeObjectURL(url); alert("Try PDF instead."); setBusy(false); };
-    img.src=url;
-  }
-  return (
-    <div style={{display:"flex",gap:8,marginTop:"1rem",paddingTop:"1rem",borderTop:"0.5px solid var(--color-border-tertiary)"}}>
-      <button onClick={doPDF} style={{fontSize:13,padding:"6px 14px"}}>⬇ PDF</button>
-      <button onClick={doImg} disabled={busy} style={{fontSize:13,padding:"6px 14px"}}>{busy?"Exporting...":"🖼 Image"}</button>
-    </div>
-  );
-}
-
-// ── MAIN APP ──────────────────────────────────────────────────────
+// ─── App ──────────────────────────────────────────────────────────────────────
 export default function App() {
-  const [view, setView]             = useState("home");
-  const [machines, setMachines]     = useState([]);
-  const [appLoading, setAppLoading] = useState(true);
-  const [isOnline, setIsOnline]     = useState(navigator.onLine);
-  const [pending, setPending]       = useState(offQ.count());
-  const [syncing, setSyncing]       = useState(false);
-  const [notifCfg, setNotifCfg]     = useState(getNotifCfg());
-  const [showSettings, setShowSettings] = useState(false);
 
-  // Entry flow
-  const [entryStep, setEntryStep]       = useState("machine");
-  const [entryMachine, setEntryMachine] = useState(null);
-  const [entryFrom, setEntryFrom]       = useState("");
-  const [entryTo, setEntryTo]           = useState("");
-  const [entryDays, setEntryDays]       = useState([]);
-  const [entries, setEntries]           = useState({});
-  const [saving, setSaving]             = useState(false);
-  const [saveStatus, setSaveStatus]     = useState("");
+  // ── Core state
+  const [view,      setView]      = useState('home');
+  const [machines,  setMachines]  = useState([]);
+  const [isOnline,  setIsOnline]  = useState(navigator.onLine);
+  const [offQ,      setOffQ]      = useState([]);
+  const [notif,     setNotif]     = useState({ enabled: false, dayTime: '06:00', nightTime: '18:00' });
 
-  // Today dashboard entries
-  const [todayEntries, setTodayEntries] = useState({});
+  // ── Entry flow
+  const [eStep,    setEStep]    = useState(1);
+  const [eMachine, setEMachine] = useState(null);
+  const [eFrom,    setEFrom]    = useState(todayStr());
+  const [eTo,      setETo]      = useState(todayStr());
+  const [eDays,    setEDays]    = useState([]);
 
-  // Machine form
-  const [editM, setEditM]   = useState(null);
-  const [mName, setMName]   = useState("");
-  const [mStart, setMStart] = useState(1);
-  const [mBreak, setMBreak] = useState(6);
+  // ── Machine form
+  const [mForm,   setMForm]   = useState({ name: '', startDay: '', breakingDay: '' });
+  const [mEdit,   setMEdit]   = useState(null);
+  const [showMF,  setShowMF]  = useState(false);
 
-  // Reports
-  const [savedReports, setSavedReports] = useState([]);
-  const [selReport, setSelReport]       = useState(null);
-  const [rType, setRType]   = useState("daily");
-  const [rMid, setRMid]     = useState("");
-  const [rDate, setRDate]   = useState(todayStr());
-  const [rFrom, setRFrom]   = useState("");
-  const [rTo, setRTo]       = useState("");
+  // ── Reports
+  const [rType,    setRType]    = useState('weekly');
+  const [rMachine, setRMachine] = useState('');
+  const [rFrom,    setRFrom]    = useState(todayStr());
+  const [rTo,      setRTo]      = useState(todayStr());
+  const [rResult,  setRResult]  = useState('');
   const [rLoading, setRLoading] = useState(false);
-  const [rError, setRError]     = useState("");
-  const [rResult, setRResult]   = useState("");
+  const [rError,   setRError]   = useState('');
 
-  useEffect(function() {
-    loadAll();
-    scheduleNotifs(notifCfg);
-    function goOnline() { setIsOnline(true); doSync(); }
-    function goOffline() { setIsOnline(false); }
-    window.addEventListener("online", goOnline);
-    window.addEventListener("offline", goOffline);
-    return function() { window.removeEventListener("online",goOnline); window.removeEventListener("offline",goOffline); clearNtTimers(); };
+  // ── History
+  const [reports,      setReports]      = useState([]);
+  const [viewingRpt,   setViewingRpt]   = useState(null);
+
+  // ── Load on mount
+  useEffect(() => {
+    const m = storageGet('mht_machines');
+    if (m) setMachines(JSON.parse(m));
+    const q = lsGet('mht_q');
+    if (q) setOffQ(JSON.parse(q));
+    const n = lsGet('mht_notif');
+    if (n) setNotif(JSON.parse(n));
+    loadReports();
   }, []);
 
-  async function loadAll() {
-    setAppLoading(true);
-    try { const r = await store.get("mht_machines"); if (r) { const m = JSON.parse(r.value); setMachines(m); loadTodayEntries(m); } } catch(e) {}
-    try {
-      const rl = await store.list("mht_rpt:");
-      if (rl && rl.keys && rl.keys.length) {
-        const arr = [];
-        for (let i = 0; i < rl.keys.length; i++) { try { const r = await store.get(rl.keys[i]); if (r) arr.push(JSON.parse(r.value)); } catch(e) {} }
-        arr.sort(function(a,b) { return b.savedAt - a.savedAt; });
-        setSavedReports(arr);
+  useEffect(() => {
+    const goOn  = () => { setIsOnline(true);  };
+    const goOff = () => setIsOnline(false);
+    window.addEventListener('online', goOn);
+    window.addEventListener('offline', goOff);
+    return () => { window.removeEventListener('online', goOn); window.removeEventListener('offline', goOff); };
+  }, []);
+
+  // ── Helpers
+  function loadReports() {
+    const list = [];
+    for (let i = 0; i < localStorage.length; i++) {
+      const k = localStorage.key(i);
+      if (k && k.startsWith('mht_rpt:')) {
+        try { list.push(JSON.parse(localStorage.getItem(k))); } catch(_) {}
       }
-    } catch(e) {}
-    setAppLoading(false);
-  }
-
-  async function loadTodayEntries(ms) {
-    const today = todayStr(), ne = {};
-    for (let i = 0; i < ms.length; i++) {
-      const m = ms[i]; if (!m.active) continue;
-      try { const r = await store.get("mht_e:"+m.id+":"+today); ne[m.id] = r ? JSON.parse(r.value) : emptyRow(); } catch(e) { ne[m.id] = emptyRow(); }
     }
-    setTodayEntries(ne);
+    list.sort((a, b) => b.createdAt - a.createdAt);
+    setReports(list);
   }
 
-  async function loadEntryRange(mid, days) {
-    const ne = {};
-    for (let i = 0; i < days.length; i++) {
-      const d = days[i];
-      try { const r = await store.get("mht_e:"+mid+":"+d); ne[d] = r ? JSON.parse(r.value) : emptyRow(); } catch(e) { ne[d] = emptyRow(); }
-    }
-    setEntries(ne);
+  function getEntry(machineId, date) {
+    const raw = storageGet('mht_e:' + machineId + ':' + date);
+    return raw ? JSON.parse(raw) : { dayStart: '', dayEnd: '', nightStart: '', nightEnd: '', noWork: false, noWorkReason: '' };
   }
 
-  async function doSync() {
-    if (!navigator.onLine) return;
-    setSyncing(true);
-    const q = offQ.get();
-    for (let i = 0; i < q.length; i++) {
-      try { await store.set(q[i].k, q[i].v); offQ.remove(q[i].k); } catch(e) { break; }
-    }
-    setPending(offQ.count());
-    setSyncing(false);
-  }
-
-  async function saveMachines(list) {
-    await store.set("mht_machines", JSON.stringify(list));
-    setMachines(list);
-    loadTodayEntries(list);
-    setPending(offQ.count());
-  }
-
-  function setEF(date, field, val) {
-    setEntries(function(p) {
-      const c = p[date] || emptyRow();
-      const n = Object.assign({}, c);
-      n[field] = typeof val === "string" ? val.replace(/[^0-9.]/g,"") : val;
-      return Object.assign({}, p, { [date]: n });
-    });
-  }
-  function toggleNW(date) {
-    setEntries(function(p) {
-      const c = p[date] || emptyRow();
-      return Object.assign({}, p, { [date]: Object.assign({}, c, { noWork:!c.noWork, dayStart:"", dayEnd:"", nightStart:"", nightEnd:"" }) });
-    });
-  }
-  function setReason(date, val) {
-    setEntries(function(p) { return Object.assign({}, p, { [date]: Object.assign({}, p[date]||emptyRow(), { reason:val }) }); });
-  }
-
-  async function saveAllEntries() {
-    if (!entryMachine || !entryDays.length) return;
-    setSaving(true); setSaveStatus("saving");
-    for (let i = 0; i < entryDays.length; i++) {
-      const d = entryDays[i], e = entries[d];
-      if (!e) continue;
-      const hasData = e.noWork || e.dayStart || e.dayEnd || e.nightStart || e.nightEnd;
-      if (!hasData) continue;
-      await store.set("mht_e:"+entryMachine.id+":"+d, JSON.stringify(Object.assign({}, e, { date:d, machineId:entryMachine.id, savedAt:Date.now() })));
-    }
-    setPending(offQ.count());
-    setSaving(false); setSaveStatus("saved");
-    loadTodayEntries(machines);
-    setTimeout(function() { setSaveStatus(""); }, 2500);
-  }
-
-  async function getRange(mid, sd, ed) {
-    const res = {}, cur = new Date(sd+"T12:00:00"), last = new Date(ed+"T12:00:00");
-    while (cur <= last) {
-      const ds = cur.toISOString().split("T")[0];
-      try { const r = await store.get("mht_e:"+mid+":"+ds); if (r) res[ds] = JSON.parse(r.value); } catch(e) {}
-      cur.setDate(cur.getDate()+1);
-    }
-    return res;
-  }
-
-  function getWeekRange(m, ref) {
-    const d = new Date(ref+"T12:00:00"), sd = parseInt(m.startDay), bd = parseInt(m.breakDay);
-    const back = (d.getDay()-sd+7)%7, s = new Date(d); s.setDate(d.getDate()-back);
-    const fwd = (bd-sd+7)%7, e = new Date(s); e.setDate(s.getDate()+fwd);
-    return { start: s.toISOString().split("T")[0], end: e.toISOString().split("T")[0] };
-  }
-
-  function updateNotif(cfg) { setNotifCfg(cfg); saveNotifCfg(cfg); scheduleNotifs(cfg); }
-  async function requestNotifPerm(cfg) {
-    if (!("Notification" in window)) { alert("Notifications not supported."); return; }
-    const perm = await Notification.requestPermission();
-    if (perm === "granted") { updateNotif(Object.assign({}, cfg, { enabled:true })); }
-    else { alert("Permission denied. Enable notifications in browser settings."); }
-  }
-
-  async function generateReport() {
-    if (!rMid) { setRError("Please select a machine."); return; }
-    const machine = machines.find(function(m) { return m.id === rMid; });
-    if (!machine) { setRError("Machine not found."); return; }
-    setRLoading(true); setRError(""); setRResult("");
-    let sd = rDate, ed = rDate;
-    if (rType === "weekly") { const rng = getWeekRange(machine, rDate); sd = rng.start; ed = rng.end; }
-    else if (rType === "custom") { sd = rFrom; ed = rTo; if (!sd||!ed) { setRError("Select start and end dates."); setRLoading(false); return; } }
-    const rangeE = await getRange(rMid, sd, ed);
-    const dates = buildDays(sd, ed);
-    const dl = dates.map(function(d) {
-      const e = rangeE[d], ds = fmtD(d, {weekday:"long",day:"numeric",month:"long",year:"numeric"});
-      if (!e) return ds+": No data";
-      if (e.noWork) return ds+": NO WORK — "+(e.reason||"No reason");
-      const dh=calcH(e.dayStart,e.dayEnd), nh=calcH(e.nightStart,e.nightEnd);
-      return ds+" | Day: "+(dh!==null?e.dayStart+"→"+e.dayEnd+" actual="+dh.toFixed(2)+"h billed="+billH(dh)+"h":"no data")+" | Night: "+(nh!==null?e.nightStart+"→"+e.nightEnd+" actual="+nh.toFixed(2)+"h billed="+billH(nh)+"h":"no data");
-    }).join("\n");
-    const wGroups = [];
-    for (let wi=0; wi<dates.length; wi+=6) wGroups.push(dates.slice(wi,wi+6));
-    const wl = wGroups.map(function(wD, w) {
-      const dE = wD.map(function(d) { const e=rangeE[d],lb=fmtD(d,{weekday:"short",day:"numeric",month:"short"}); if(!e)return lb+": no data"; if(e.noWork)return lb+": NO WORK"; const db=billH(calcH(e.dayStart,e.dayEnd)); return lb+": "+(db!==null?db+"h":"no data"); }).join(", ");
-      const nE = wD.map(function(d) { const e=rangeE[d],lb=fmtD(d,{weekday:"short",day:"numeric",month:"short"}); if(!e)return lb+": no data"; if(e.noWork)return lb+": NO WORK"; const nb=billH(calcH(e.nightStart,e.nightEnd)); return lb+": "+(nb!==null?nb+"h":"no data"); }).join(", ");
-      const wDB = wD.reduce(function(s,d) { const e=rangeE[d]; return s+(e&&!e.noWork?(billH(calcH(e.dayStart,e.dayEnd))||0):0); }, 0);
-      const wNB = wD.reduce(function(s,d) { const e=rangeE[d]; return s+(e&&!e.noWork?(billH(calcH(e.nightStart,e.nightEnd))||0):0); }, 0);
-      return "Week "+(w+1)+" ("+fmtD(wD[0],{day:"numeric",month:"short"})+" to "+fmtD(wD[wD.length-1],{day:"numeric",month:"short"})+")\n  Day: "+dE+"\n  Day Total: "+wDB+"h\n  Night: "+nE+"\n  Night Total: "+wNB+"h\n  Week Total: "+(wDB+wNB)+"h";
-    }).join("\n\n");
-    const isD = rType==="daily";
-    const pl = [
-      "You are an industrial equipment analyst. Generate a structured professional report.",
-      "Machine: "+machine.name, "Type: "+(isD?"Daily":rType==="weekly"?"Weekly":"Custom"),
-      "Period: "+fmtD(sd,{weekday:"long",day:"numeric",month:"long",year:"numeric"})+(sd!==ed?" to "+fmtD(ed,{weekday:"long",day:"numeric",month:"long",year:"numeric"}):""),
-      "Rules: 1 week=6 days. <30min rounds down, 30+min rounds up.", "", "DAILY DATA:", dl
-    ];
-    if (!isD) pl.push("", "WEEKLY DATA:", wl);
-    if (isD) {
-      pl.push("", "### [Full date]", "**Day Shift**: Start Odo, End Odo, Actual h, Billed h", "**Night Shift**: Start Odo, End Odo, Actual h, Billed h", "If NO WORK: state reason. End with brief observation.");
+  function saveEntry(key, value) {
+    if (isOnline) {
+      storageSet(key, value);
     } else {
-      pl.push("", "## Daily Report — for each day: ### [date], Day Shift (start odo, end odo, actual, billed), Night Shift details. If NO WORK state reason.",
-        "## Weekly Report — for each week: ### Week N, **Day Shifts** (each day), **Total Day Shift: Xh**, **Night Shifts** (each day), **Total Night Shift: Xh**, **Total Week: Xh + Xh = Xh**",
-        "## Overall Summary: 3-4 sentences + 2 recommendations.");
+      const q = [...offQ, { key, value }];
+      setOffQ(q);
+      lsSet('mht_q', JSON.stringify(q));
+      lsSet('mht_l:' + key, value);
     }
-    pl.push("Use only data provided. Be precise and professional.");
+  }
+
+  function saveMachines(list) {
+    setMachines(list);
+    storageSet('mht_machines', JSON.stringify(list));
+  }
+
+  function syncQueue() {
+    offQ.forEach(item => storageSet(item.key, item.value));
+    setOffQ([]);
+    lsSet('mht_q', '[]');
+  }
+
+  function saveNotif(s) { setNotif(s); lsSet('mht_notif', JSON.stringify(s)); }
+
+  // ── Entry flow
+  function startEntry() {
+    setEStep(1); setEMachine(null);
+    setEFrom(todayStr()); setETo(todayStr()); setEDays([]);
+    setView('entry');
+  }
+
+  function entryPickMachine(m) { setEMachine(m); setEStep(2); }
+
+  function entryBuildDays() {
+    if (eFrom > eTo) { alert('From date must be before To date'); return; }
+    const days = datesBetween(eFrom, eTo).map(date => ({ date, ...getEntry(eMachine.id, date) }));
+    setEDays(days);
+    setEStep(3);
+  }
+
+  function updateDay(idx, field, value) {
+    setEDays(prev => { const n = [...prev]; n[idx] = { ...n[idx], [field]: value }; return n; });
+  }
+
+  function saveAllEntries() {
+    eDays.forEach(day => {
+      saveEntry('mht_e:' + eMachine.id + ':' + day.date, JSON.stringify(day));
+    });
+    alert('All entries saved!');
+    setView('home');
+  }
+
+  // ── Machine CRUD
+  function addMachine() {
+    if (!mForm.name.trim()) return;
+    const m = { id: Date.now().toString(), name: mForm.name.trim(), startDay: mForm.startDay, breakingDay: mForm.breakingDay, active: true, createdAt: Date.now() };
+    saveMachines([...machines, m]);
+    setMForm({ name: '', startDay: '', breakingDay: '' }); setShowMF(false);
+  }
+  function updateMachine() {
+    saveMachines(machines.map(m => m.id === mEdit.id ? { ...m, ...mForm } : m));
+    setMEdit(null); setShowMF(false); setMForm({ name: '', startDay: '', breakingDay: '' });
+  }
+  function deleteMachine(id) {
+    if (!window.confirm('Delete this machine and all its data?')) return;
+    saveMachines(machines.filter(m => m.id !== id));
+  }
+  function toggleActive(id) { saveMachines(machines.map(m => m.id === id ? { ...m, active: !m.active } : m)); }
+
+  // ── Reports
+  async function runReport() {
+    if (!rMachine) { setRError('Please select a machine.'); return; }
+    setRLoading(true); setRError(''); setRResult('');
+
     try {
-      const res = await fetch("/api/generate", { method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({ model:"llama-3.3-70b-versatile", max_tokens:1500, messages:[{ role:"user", content:pl.join("\n") }] }) });
-      const data = await res.json();
-      if (!res.ok) { setRError("API error "+res.status+": "+(data.error||"Unknown")); setRLoading(false); return; }
-      const text = (data.content||[]).map(function(b) { return b.text||""; }).join("");
-      if (!text) { setRError("No report generated."); setRLoading(false); return; }
-      setRResult(text);
-      const entry = { id:Date.now().toString(), savedAt:Date.now(), machineName:machine.name, machineId:machine.id, type:rType, startDate:sd, endDate:ed, report:text };
-      await store.set("mht_rpt:"+entry.id, JSON.stringify(entry));
-      setPending(offQ.count());
-      setSavedReports(function(prev) { return [entry].concat(prev); });
-    } catch(e) { setRError("Request failed: "+e.message); }
+      const machine = machines.find(m => m.id === rMachine);
+      const from = rType === 'daily' ? rFrom : rFrom;
+      const to   = rType === 'daily' ? rFrom : rTo;
+
+      const entries = datesBetween(from, to)
+        .map(date => ({ date, ...getEntry(rMachine, date) }))
+        .filter(e => e.dayStart || e.nightStart || e.noWork);
+
+      if (entries.length === 0) { setRError('No entries found for this period.'); setRLoading(false); return; }
+
+      const label = from === to ? fmtLong(from) : fmtLong(from) + ' – ' + fmtLong(to);
+      const result = await generateReport(entries, machine, label);
+      setRResult(result);
+    } catch (err) {
+      setRError(err.message || 'Failed to generate report.');
+    }
     setRLoading(false);
   }
 
-  // ── SHARED STYLES ─────────────────────────────────────────────
-  const wrap = { padding:"1rem", maxWidth:700, margin:"0 auto", fontFamily:"var(--font-sans)" };
-  const card = { background:"var(--color-background-primary)", border:"0.5px solid var(--color-border-tertiary)", borderRadius:"var(--border-radius-lg)", padding:"1rem 1.25rem", marginBottom:"0.875rem" };
-  const sel  = { width:"100%", boxSizing:"border-box", padding:"8px", borderRadius:6, border:"0.5px solid var(--color-border-tertiary)", background:"var(--color-background-primary)", color:"var(--color-text-primary)", fontSize:13 };
-
-  function StorageMode() {
-    const inClaude = typeof window !== "undefined" && window.storage;
-    const label = inClaude ? "☁ Claude" : "💾 Local";
-    const bg    = inClaude ? "#EEEDFE" : "#FDF3E1";
-    const color = inClaude ? "#4640A0" : "#A0752B";
-    return <span style={{fontSize:11,background:bg,color,padding:"2px 8px",borderRadius:4,fontWeight:500}}>{label}</span>;
+  function saveReport() {
+    if (!rResult) return;
+    const id = Date.now().toString();
+    const rpt = {
+      id, machineId: rMachine,
+      machineName: machines.find(m => m.id === rMachine)?.name || '',
+      type: rType, from: rType === 'daily' ? rFrom : rFrom, to: rType === 'daily' ? rFrom : rTo,
+      content: rResult, createdAt: Date.now()
+    };
+    localStorage.setItem('mht_rpt:' + id, JSON.stringify(rpt));
+    loadReports();
+    alert('Report saved to History!');
   }
 
-  function StatusBar() {
-    return (
-      <div style={{display:"flex",alignItems:"center",gap:6,marginBottom:"0.75rem",flexWrap:"wrap"}}>
-        <span style={{fontSize:11,background:isOnline?"#E1F5EE":"#FEE9E9",color:isOnline?"#0F6E56":"#9B1C1C",padding:"2px 8px",borderRadius:4,fontWeight:500}}>{isOnline?"🟢 Online":"🔴 Offline"}</span>
-        <StorageMode/>
-        {pending > 0 && (
-          <button onClick={doSync} disabled={syncing||!isOnline} style={{fontSize:11,background:"#FDF3E1",color:"#A0752B",border:"0.5px solid #D9A730",padding:"2px 8px",borderRadius:4,cursor:"pointer",fontWeight:500}}>
-            {syncing ? "Syncing..." : "⚠ "+pending+" pending — Sync now"}
-          </button>
-        )}
-      </div>
-    );
+  function downloadTxt(content, name) {
+    const blob = new Blob([content], { type: 'text/plain' });
+    const url  = URL.createObjectURL(blob);
+    const a    = document.createElement('a');
+    a.href = url; a.download = name + '.txt'; a.click();
+    URL.revokeObjectURL(url);
   }
 
-  function Nav() {
-    const tabs = [
-      {id:"home",label:"🏠 Home"},
-      {id:"entry",label:"📋 Entry"},
-      {id:"machines",label:"⚙ Machines"},
-      {id:"reports",label:"📊 Reports"},
-      {id:"history",label:"🕓 History"}
+  // ── Home summary
+  function getHomeSummary() {
+    let totalHrs = 0, working = 0, noWork = 0, pending = 0;
+    const t = todayStr();
+    machines.forEach(m => {
+      const e = getEntry(m.id, t);
+      if (e.noWork) { noWork++; }
+      else if (e.dayStart || e.nightStart) { working++; totalHrs += calcBilled(e.dayStart, e.dayEnd) + calcBilled(e.nightStart, e.nightEnd); }
+      else { pending++; }
+    });
+    return { totalHrs, working, noWork, pending };
+  }
+
+  // ── Notification permission
+  async function requestNotif() {
+    if (!('Notification' in window)) { alert('Notifications not supported on this device.'); return; }
+    const p = await Notification.requestPermission();
+    if (p === 'granted') saveNotif({ ...notif, enabled: true });
+    else alert('Notification permission denied.');
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────────
+  // RENDER FUNCTIONS
+  // ─────────────────────────────────────────────────────────────────────────────
+
+  function renderHome() {
+    const h = new Date().getHours();
+    const greet = h < 12 ? 'Good morning' : h < 17 ? 'Good afternoon' : 'Good evening';
+    const sum = getHomeSummary();
+    const sumCards = [
+      { label: 'Total Hours Today', value: sum.totalHrs + 'h' },
+      { label: 'Working',           value: sum.working },
+      { label: 'No Work',           value: sum.noWork },
+      { label: 'Pending Entry',     value: sum.pending },
     ];
     return (
-      <div style={{display:"flex",borderBottom:"0.5px solid var(--color-border-tertiary)",marginBottom:"1.25rem"}}>
-        {tabs.map(function(t) {
-          const active = view===t.id || (t.id==="machines" && view==="machineForm");
+      <div style={S.page}>
+        <div style={{ padding: '20px 0 12px' }}>
+          <div style={{ fontSize: 22, fontWeight: 700, color: '#f1f5f9' }}>{greet} 👋</div>
+          <div style={{ fontSize: 13, color: C.muted, marginTop: 2 }}>{fmtLong(todayStr())}</div>
+        </div>
+
+        {offQ.length > 0 && (
+          <div style={{ ...S.card, borderColor: C.amber, background: '#160f00' }}>
+            <div style={S.flex}>
+              <span style={{ color: C.amber, fontSize: 13 }}>📴 {offQ.length} entries pending sync</span>
+              <button onClick={syncQueue} style={{ background: C.amber, border: 'none', borderRadius: 6, color: '#000', padding: '4px 12px', cursor: 'pointer', fontSize: 12, fontWeight: 600 }}>Sync</button>
+            </div>
+          </div>
+        )}
+
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10, marginBottom: 16 }}>
+          {sumCards.map(c => (
+            <div key={c.label} style={{ ...S.card, marginBottom: 0 }}>
+              <div style={{ fontSize: 11, color: C.muted, marginBottom: 2 }}>{c.label}</div>
+              <div style={{ fontSize: 28, fontWeight: 700, color: '#f1f5f9' }}>{c.value}</div>
+            </div>
+          ))}
+        </div>
+
+        <button style={S.btn('primary')} onClick={startEntry}>+ New Entry</button>
+        <button style={S.btn()} onClick={() => setView('reports')}>📊 Generate Report</button>
+
+        <div style={{ marginTop: 8, fontSize: 13, fontWeight: 600, color: C.muted, marginBottom: 8 }}>Machines — Today</div>
+        {machines.length === 0 && <div style={{ color: C.dim, fontSize: 13 }}>No machines yet. Add one in the Machines tab.</div>}
+        {machines.map(m => {
+          const e = getEntry(m.id, todayStr());
+          const status = e.noWork ? 'no-work' : (e.dayStart || e.nightStart) ? 'active' : 'pending';
+          const dayB = calcBilled(e.dayStart, e.dayEnd);
+          const nightB = calcBilled(e.nightStart, e.nightEnd);
           return (
-            <button key={t.id} onClick={function() { setView(t.id); setRResult(""); setRError(""); setSelReport(null); setEntryStep("machine"); setShowSettings(false); }}
-              style={{flex:1,padding:"10px 2px",fontSize:12,fontWeight:active?600:400,color:active?"var(--color-text-primary)":"var(--color-text-secondary)",background:"transparent",border:"none",borderBottom:active?"2px solid var(--color-text-primary)":"2px solid transparent",cursor:"pointer"}}>
-              {t.label}
-            </button>
+            <div key={m.id} style={{ ...S.card, padding: '12px 14px' }}>
+              <div style={S.flex}>
+                <div>
+                  <div style={{ fontWeight: 600, fontSize: 14 }}>{m.name}</div>
+                  <div style={S.tag}>
+                    {e.noWork ? (e.noWorkReason || 'No Work') : (dayB || nightB) ? dayB + 'h day · ' + nightB + 'h night' : 'No entry yet'}
+                  </div>
+                </div>
+                <span style={S.badge(status === 'active' ? 'green' : status === 'no-work' ? 'red' : 'blue')}>
+                  {status === 'active' ? 'Active' : status === 'no-work' ? 'No Work' : 'Pending'}
+                </span>
+              </div>
+            </div>
           );
         })}
       </div>
     );
   }
 
-  if (appLoading) {
-    return <div style={{padding:"2rem",textAlign:"center",color:"var(--color-text-secondary)",fontFamily:"var(--font-sans)"}}>Loading...</div>;
-  }
+  function renderEntry() {
+    // Step 1: Pick machine
+    if (eStep === 1) {
+      const active = machines.filter(m => m.active);
+      return (
+        <div style={S.page}>
+          <div style={{ padding: '16px 0 8px', fontSize: 16, fontWeight: 700 }}>Select Machine</div>
+          {active.length === 0 && <div style={{ ...S.card, color: C.muted }}>No active machines. Add and activate one in the Machines tab.</div>}
+          {active.map(m => (
+            <div key={m.id} style={{ ...S.card, cursor: 'pointer', borderColor: C.border }} onClick={() => entryPickMachine(m)}>
+              <div style={S.flex}>
+                <div>
+                  <div style={{ fontWeight: 600 }}>{m.name}</div>
+                  <div style={S.tag}>Tap to select</div>
+                </div>
+                <span style={{ color: C.blue, fontSize: 18 }}>›</span>
+              </div>
+            </div>
+          ))}
+        </div>
+      );
+    }
 
-  // ── SETTINGS ──────────────────────────────────────────────────
-  if (view==="home" && showSettings) {
+    // Step 2: Date range
+    if (eStep === 2) return (
+      <div style={S.page}>
+        <div style={{ padding: '16px 0 4px', fontSize: 16, fontWeight: 700 }}>{eMachine.name}</div>
+        <div style={{ color: C.muted, fontSize: 13, marginBottom: 16 }}>Select date range for entry</div>
+        <label style={S.label}>From</label>
+        <input type="date" style={S.input} value={eFrom} onChange={e => setEFrom(e.target.value)} />
+        <label style={S.label}>To</label>
+        <input type="date" style={S.input} value={eTo}   onChange={e => setETo(e.target.value)} />
+        <button style={S.btn('primary')} onClick={entryBuildDays}>Continue →</button>
+        <button style={S.btn()} onClick={() => setEStep(1)}>← Back</button>
+      </div>
+    );
+
+    // Step 3: Day-by-day inputs
     return (
-      <div style={wrap}>
-        <Nav/>
-        <div style={{display:"flex",alignItems:"center",gap:10,marginBottom:"1rem"}}>
-          <button onClick={function(){setShowSettings(false);}} style={{fontSize:13,padding:"5px 10px"}}>← Back</button>
-          <h2 style={{fontSize:18,fontWeight:600,margin:0,color:"var(--color-text-primary)"}}>Settings</h2>
-        </div>
-        <div style={card}>
-          <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:"1rem"}}>
-            <div>
-              <div style={{fontSize:14,fontWeight:500,color:"var(--color-text-primary)"}}>Shift Reminders</div>
-              <div style={{fontSize:12,color:"var(--color-text-secondary)",marginTop:2}}>Get notified to enter odometer readings</div>
+      <div style={S.page}>
+        <div style={{ padding: '16px 0 4px', fontSize: 16, fontWeight: 700 }}>{eMachine.name}</div>
+        <div style={{ color: C.muted, fontSize: 13, marginBottom: 12 }}>{fmtShort(eFrom)} – {fmtShort(eTo)}</div>
+
+        {eDays.map((day, idx) => (
+          <div key={day.date} style={S.card}>
+            <div style={{ ...S.flex, marginBottom: 10 }}>
+              <div style={{ fontWeight: 600, fontSize: 13 }}>{fmtLong(day.date)}</div>
+              <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, color: '#f87171', cursor: 'pointer' }}>
+                <input
+                  type="checkbox"
+                  checked={!!day.noWork}
+                  onChange={e => updateDay(idx, 'noWork', e.target.checked)}
+                  style={{ accentColor: C.red }}
+                />
+                No Work
+              </label>
             </div>
-            <button onClick={function(){
-              if (!notifCfg.enabled) { requestNotifPerm(notifCfg); }
-              else { updateNotif(Object.assign({},notifCfg,{enabled:false})); }
-            }} style={{padding:"6px 14px",fontSize:13,fontWeight:500,background:notifCfg.enabled?"#E1F5EE":"var(--color-background-secondary)",color:notifCfg.enabled?"#0F6E56":"var(--color-text-secondary)",border:"0.5px solid "+(notifCfg.enabled?"#7DD3BE":"var(--color-border-tertiary)"),borderRadius:6,cursor:"pointer"}}>
-              {notifCfg.enabled ? "🔔 On — Disable" : "🔕 Off — Enable"}
-            </button>
+
+            {day.noWork ? (
+              <input
+                style={S.input}
+                placeholder="Reason (optional)"
+                value={day.noWorkReason || ''}
+                onChange={e => updateDay(idx, 'noWorkReason', e.target.value)}
+              />
+            ) : (
+              <>
+                <div style={{ fontSize: 12, color: C.muted, marginBottom: 6, fontWeight: 500 }}>Day Shift</div>
+                <div style={S.row}>
+                  <div style={{ flex: 1 }}>
+                    <div style={S.tag}>Start Odo</div>
+                    <input type="number" step="0.1" style={S.input} placeholder="0.0" value={day.dayStart}
+                      onChange={e => updateDay(idx, 'dayStart', e.target.value)} />
+                  </div>
+                  <div style={{ flex: 1 }}>
+                    <div style={S.tag}>End Odo</div>
+                    <input type="number" step="0.1" style={S.input} placeholder="0.0" value={day.dayEnd}
+                      onChange={e => updateDay(idx, 'dayEnd', e.target.value)} />
+                  </div>
+                  <div style={{ flex: 1 }}>
+                    <div style={S.tag}>Billed</div>
+                    <div style={S.billedBox}>{calcBilled(day.dayStart, day.dayEnd)}h</div>
+                  </div>
+                </div>
+
+                <div style={{ fontSize: 12, color: C.muted, marginBottom: 6, fontWeight: 500 }}>Night Shift</div>
+                <div style={S.row}>
+                  <div style={{ flex: 1 }}>
+                    <div style={S.tag}>Start Odo</div>
+                    <input type="number" step="0.1" style={S.input} placeholder="0.0" value={day.nightStart}
+                      onChange={e => updateDay(idx, 'nightStart', e.target.value)} />
+                  </div>
+                  <div style={{ flex: 1 }}>
+                    <div style={S.tag}>End Odo</div>
+                    <input type="number" step="0.1" style={S.input} placeholder="0.0" value={day.nightEnd}
+                      onChange={e => updateDay(idx, 'nightEnd', e.target.value)} />
+                  </div>
+                  <div style={{ flex: 1 }}>
+                    <div style={S.tag}>Billed</div>
+                    <div style={S.billedBox}>{calcBilled(day.nightStart, day.nightEnd)}h</div>
+                  </div>
+                </div>
+              </>
+            )}
           </div>
-          {notifCfg.enabled && (
-            <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12}}>
-              <div>
-                <label style={{fontSize:13,color:"var(--color-text-secondary)",display:"block",marginBottom:6}}>☀ Day shift reminder</label>
-                <input type="time" value={notifCfg.dayTime} onChange={function(ev){updateNotif(Object.assign({},notifCfg,{dayTime:ev.target.value}));}} style={{width:"100%",boxSizing:"border-box",fontSize:13}}/>
-              </div>
-              <div>
-                <label style={{fontSize:13,color:"var(--color-text-secondary)",display:"block",marginBottom:6}}>☾ Night shift reminder</label>
-                <input type="time" value={notifCfg.nightTime} onChange={function(ev){updateNotif(Object.assign({},notifCfg,{nightTime:ev.target.value}));}} style={{width:"100%",boxSizing:"border-box",fontSize:13}}/>
-              </div>
-            </div>
-          )}
-        </div>
-        <div style={card}>
-          <div style={{fontSize:14,fontWeight:500,color:"var(--color-text-primary)",marginBottom:8}}>Storage</div>
-          <div style={{fontSize:13,color:"var(--color-text-secondary)",lineHeight:1.7}}>
-            <div>Mode: <strong><StorageMode/></strong></div>
-            <div>Pending sync: <strong style={{color:pending>0?"#A0752B":"var(--color-text-primary)"}}>{pending} item{pending!==1?"s":""}</strong></div>
-            {pending>0&&isOnline&&<button onClick={doSync} disabled={syncing} style={{marginTop:6,fontSize:12,padding:"4px 12px"}}>{syncing?"Syncing...":"Sync now"}</button>}
-          </div>
+        ))}
+
+        <div style={{ position: 'sticky', bottom: 88, paddingBottom: 8, background: C.bg }}>
+          <button style={S.btn('success')} onClick={saveAllEntries}>✓ Save All Entries</button>
+          <button style={S.btn()} onClick={() => setEStep(2)}>← Back</button>
         </div>
       </div>
     );
   }
 
-  // ── HOME DASHBOARD ────────────────────────────────────────────
-  if (view==="home") {
-    const active = machines.filter(function(m){return m.active;});
-    const todayList = active.map(function(m) {
-      const e = todayEntries[m.id] || emptyRow();
-      const dh = e.noWork?null:calcH(e.dayStart,e.dayEnd);
-      const nh = e.noWork?null:calcH(e.nightStart,e.nightEnd);
-      const db = billH(dh), nb = billH(nh);
-      const totalBilled = (db||0)+(nb||0);
-      const hasData = e.noWork || e.dayStart || e.nightStart;
-      return { m, e, db, nb, totalBilled, hasData };
-    });
-    const totalHrsToday = todayList.reduce(function(s,t){return s+t.totalBilled;},0);
-    const workingCount  = todayList.filter(function(t){return t.hasData&&!t.e.noWork;}).length;
-    const noWorkCount   = todayList.filter(function(t){return t.e.noWork;}).length;
-    const pendingEntry  = todayList.filter(function(t){return !t.hasData;}).length;
-    const hr = new Date().getHours();
-    const greeting = hr<12?"Morning":hr<17?"Afternoon":"Evening";
-
+  function renderMachines() {
     return (
-      <div style={wrap}>
-        <Nav/>
-        <StatusBar/>
-        <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",marginBottom:"1rem"}}>
-          <div>
-            <h2 style={{fontSize:20,fontWeight:600,margin:"0 0 2px",color:"var(--color-text-primary)"}}>Good {greeting} 👋</h2>
-            <p style={{fontSize:13,color:"var(--color-text-secondary)",margin:0}}>{new Date().toLocaleDateString("en-GB",{weekday:"long",day:"numeric",month:"long",year:"numeric"})}</p>
-          </div>
-          <button onClick={function(){setShowSettings(true);}} style={{fontSize:12,padding:"6px 12px",background:"var(--color-background-secondary)",border:"0.5px solid var(--color-border-tertiary)",borderRadius:6,cursor:"pointer"}}>⚙ Settings</button>
-        </div>
+      <div style={S.page}>
+        <div style={{ padding: '16px 0 8px', fontSize: 16, fontWeight: 700 }}>Machine Registry</div>
 
-        <div style={{display:"grid",gridTemplateColumns:"repeat(4,minmax(0,1fr))",gap:8,marginBottom:"1.25rem"}}>
-          {[
-            {label:"Total hrs today",  value:totalHrsToday+"h",  color:"var(--color-text-primary)",bg:"var(--color-background-secondary)"},
-            {label:"Working",           value:workingCount+"/"+active.length, color:"#0F6E56", bg:"#E1F5EE"},
-            {label:"No work",           value:noWorkCount, color:noWorkCount>0?"#9B1C1C":"var(--color-text-primary)", bg:noWorkCount>0?"#FEE9E9":"var(--color-background-secondary)"},
-            {label:"Pending entry",     value:pendingEntry, color:pendingEntry>0?"#A0752B":"var(--color-text-primary)", bg:pendingEntry>0?"#FDF3E1":"var(--color-background-secondary)"},
-          ].map(function(c,i) {
-            return (
-              <div key={i} style={{background:c.bg,borderRadius:"var(--border-radius-md)",padding:"0.75rem"}}>
-                <div style={{fontSize:11,color:"var(--color-text-secondary)",marginBottom:3}}>{c.label}</div>
-                <div style={{fontSize:20,fontWeight:600,color:c.color}}>{c.value}</div>
+        {showMF && (
+          <div style={S.card}>
+            <div style={{ fontWeight: 600, marginBottom: 12 }}>{mEdit ? 'Edit Machine' : 'Register New Machine'}</div>
+            <label style={S.label}>Machine Name *</label>
+            <input style={S.input} value={mForm.name} placeholder="e.g. CAT 336" onChange={e => setMForm(p => ({ ...p, name: e.target.value }))} />
+            <label style={S.label}>Starting Odometer</label>
+            <input type="number" style={S.input} value={mForm.startDay} placeholder="e.g. 1200" onChange={e => setMForm(p => ({ ...p, startDay: e.target.value }))} />
+            <label style={S.label}>Breaking Day (hours)</label>
+            <input type="number" style={S.input} value={mForm.breakingDay} placeholder="e.g. 500" onChange={e => setMForm(p => ({ ...p, breakingDay: e.target.value }))} />
+            <button style={S.btn('primary')} onClick={mEdit ? updateMachine : addMachine}>
+              {mEdit ? 'Update Machine' : 'Add Machine'}
+            </button>
+            <button style={S.btn()} onClick={() => { setShowMF(false); setMEdit(null); setMForm({ name: '', startDay: '', breakingDay: '' }); }}>
+              Cancel
+            </button>
+          </div>
+        )}
+
+        {!showMF && <button style={S.btn('primary')} onClick={() => setShowMF(true)}>+ Register Machine</button>}
+
+        {machines.length === 0 && !showMF && <div style={{ color: C.dim, fontSize: 13, marginTop: 8 }}>No machines registered yet.</div>}
+
+        {machines.map(m => (
+          <div key={m.id} style={S.card}>
+            <div style={S.flex}>
+              <div>
+                <div style={{ fontWeight: 600, fontSize: 14, marginBottom: 2 }}>{m.name}</div>
+                <div style={S.tag}>Start odo: {m.startDay || '—'} | Break: {m.breakingDay || '—'}h</div>
               </div>
-            );
-          })}
+              <span style={S.badge(m.active ? 'green' : 'red')}>{m.active ? 'Active' : 'Inactive'}</span>
+            </div>
+            <div style={{ ...S.row, marginTop: 12, gap: 6 }}>
+              <button style={{ ...S.btn(), padding: '8px 10px', marginBottom: 0, flex: 1, fontSize: 12 }} onClick={() => toggleActive(m.id)}>
+                {m.active ? 'Deactivate' : 'Activate'}
+              </button>
+              <button style={{ ...S.btn(), padding: '8px 10px', marginBottom: 0, flex: 1, fontSize: 12 }} onClick={() => {
+                setMEdit(m); setMForm({ name: m.name, startDay: m.startDay || '', breakingDay: m.breakingDay || '' }); setShowMF(true);
+              }}>Edit</button>
+              <button style={{ ...S.btn('danger'), padding: '8px 10px', marginBottom: 0, flex: 1, fontSize: 12 }} onClick={() => deleteMachine(m.id)}>Delete</button>
+            </div>
+          </div>
+        ))}
+      </div>
+    );
+  }
+
+  function renderReports() {
+    return (
+      <div style={S.page}>
+        <div style={{ padding: '16px 0 8px', fontSize: 16, fontWeight: 700 }}>Generate Report</div>
+
+        <label style={S.label}>Machine</label>
+        <select style={{ ...S.input, marginBottom: 12 }} value={rMachine} onChange={e => setRMachine(e.target.value)}>
+          <option value="">Select machine…</option>
+          {machines.map(m => <option key={m.id} value={m.id}>{m.name}</option>)}
+        </select>
+
+        <label style={S.label}>Report Type</label>
+        <div style={{ ...S.row, marginBottom: 14 }}>
+          {['daily','weekly','custom'].map(t => (
+            <button key={t} onClick={() => setRType(t)} style={{
+              flex: 1, padding: '9px 0', borderRadius: 8, border: 'none', cursor: 'pointer',
+              fontWeight: 600, fontSize: 13, fontFamily: 'inherit',
+              background: rType === t ? C.blue : C.border, color: '#fff'
+            }}>
+              {t.charAt(0).toUpperCase() + t.slice(1)}
+            </button>
+          ))}
         </div>
 
-        {active.length === 0 ? (
-          <div style={{textAlign:"center",padding:"2rem 0",color:"var(--color-text-tertiary)"}}>
-            <div style={{fontSize:32,marginBottom:8}}>⚙</div>
-            <p style={{fontSize:14,margin:"0 0 12px"}}>No machines registered yet.</p>
-            <button onClick={function(){setView("machines");}} style={{fontSize:13,padding:"8px 16px"}}>Register a Machine</button>
-          </div>
+        {rType === 'daily' ? (
+          <><label style={S.label}>Date</label><input type="date" style={S.input} value={rFrom} onChange={e => setRFrom(e.target.value)} /></>
         ) : (
           <>
-            <p style={{fontSize:13,fontWeight:500,color:"var(--color-text-secondary)",margin:"0 0 0.75rem"}}>Today's status</p>
-            {todayList.map(function(t) {
-              const statusColor = t.e.noWork?"#9B1C1C":t.hasData?"#0F6E56":"#A0752B";
-              const statusBg    = t.e.noWork?"#FEE9E9":t.hasData?"#E1F5EE":"#FDF3E1";
-              const statusLabel = t.e.noWork?"No Work":t.hasData?t.totalBilled+"h billed":"Not entered";
-              return (
-                <div key={t.m.id} onClick={function(){ setEntryMachine(t.m); setEntryFrom(todayStr()); setEntryTo(todayStr()); setEntryDays([todayStr()]); loadEntryRange(t.m.id,[todayStr()]); setEntryStep("list"); setView("entry"); }}
-                  style={Object.assign({},card,{display:"flex",justifyContent:"space-between",alignItems:"center",cursor:"pointer"})}>
-                  <div>
-                    <div style={{fontSize:14,fontWeight:500,color:"var(--color-text-primary)"}}>{t.m.name}</div>
-                    <div style={{fontSize:11,color:"var(--color-text-tertiary)",marginTop:2}}>
-                      {t.hasData&&!t.e.noWork ? ("Day: "+(t.db!==null?t.db+"h":"—")+" · Night: "+(t.nb!==null?t.nb+"h":"—")) : (DAY_FULL[t.m.startDay]+" → "+DAY_FULL[t.m.breakDay])}
-                    </div>
-                  </div>
-                  <div style={{display:"flex",alignItems:"center",gap:8}}>
-                    <span style={{fontSize:12,fontWeight:500,background:statusBg,color:statusColor,padding:"3px 10px",borderRadius:4}}>{statusLabel}</span>
-                    <span style={{color:"var(--color-text-tertiary)"}}>→</span>
-                  </div>
-                </div>
-              );
-            })}
-            <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8,marginTop:4}}>
-              <button onClick={function(){setEntryStep("machine");setView("entry");}} style={{padding:"10px",fontSize:13,background:"var(--color-background-secondary)"}}>📋 Enter Hours</button>
-              <button onClick={function(){setView("reports");}} style={{padding:"10px",fontSize:13,background:"var(--color-background-secondary)"}}>📊 Generate Report</button>
+            <label style={S.label}>From</label>
+            <input type="date" style={S.input} value={rFrom} onChange={e => setRFrom(e.target.value)} />
+            <label style={S.label}>To</label>
+            <input type="date" style={S.input} value={rTo} onChange={e => setRTo(e.target.value)} />
+          </>
+        )}
+
+        <button style={S.btn('primary')} onClick={runReport} disabled={rLoading}>
+          {rLoading ? 'Generating…' : 'Generate Report'}
+        </button>
+
+        {rError && <div style={{ color: '#f87171', fontSize: 13, marginBottom: 8 }}>⚠ {rError}</div>}
+
+        {rResult && (
+          <>
+            <div style={{ ...S.card, fontFamily: "'Courier New', monospace", fontSize: 12, whiteSpace: 'pre-wrap', lineHeight: 1.7, maxHeight: 420, overflowY: 'auto', marginBottom: 10 }}>
+              {rResult}
+            </div>
+            <div style={S.row}>
+              <button style={{ ...S.btn('success'), marginBottom: 0, flex: 1 }} onClick={saveReport}>💾 Save</button>
+              <button style={{ ...S.btn(), marginBottom: 0, flex: 1 }} onClick={() => downloadTxt(rResult, 'report-' + rFrom)}>⬇ Download</button>
             </div>
           </>
         )}
@@ -533,404 +675,140 @@ export default function App() {
     );
   }
 
-  // ── ENTRY STEP 1 — Select machine ─────────────────────────────
-  if (view==="entry" && entryStep==="machine") {
-    const active = machines.filter(function(m){return m.active;});
+  function renderHistory() {
+    if (viewingRpt) return (
+      <div style={S.page}>
+        <button onClick={() => setViewingRpt(null)} style={{ background: 'none', border: 'none', color: C.blue, cursor: 'pointer', padding: '16px 0', fontSize: 14, fontFamily: 'inherit' }}>
+          ← Back
+        </button>
+        <div style={{ fontWeight: 700, fontSize: 15, marginBottom: 2 }}>{viewingRpt.machineName}</div>
+        <div style={{ fontSize: 12, color: C.muted, marginBottom: 14 }}>
+          {fmtLong(viewingRpt.from)}{viewingRpt.from !== viewingRpt.to ? ' – ' + fmtLong(viewingRpt.to) : ''}
+        </div>
+        <div style={{ ...S.card, fontFamily: "'Courier New', monospace", fontSize: 12, whiteSpace: 'pre-wrap', lineHeight: 1.7, maxHeight: 500, overflowY: 'auto' }}>
+          {viewingRpt.content}
+        </div>
+        <button style={S.btn()} onClick={() => downloadTxt(viewingRpt.content, 'report-' + viewingRpt.from)}>⬇ Download</button>
+        <button style={S.btn('danger')} onClick={() => {
+          if (!window.confirm('Delete this report?')) return;
+          localStorage.removeItem('mht_rpt:' + viewingRpt.id);
+          loadReports();
+          setViewingRpt(null);
+        }}>🗑 Delete</button>
+      </div>
+    );
+
     return (
-      <div style={wrap}>
-        <Nav/>
-        <StatusBar/>
-        <h2 style={{fontSize:18,fontWeight:600,margin:"0 0 0.25rem",color:"var(--color-text-primary)"}}>Enter Hours</h2>
-        <p style={{fontSize:13,color:"var(--color-text-secondary)",margin:"0 0 1rem"}}>Step 1 of 3 — Select a machine</p>
-        {active.length===0 && (
-          <div style={{textAlign:"center",padding:"3rem 0",color:"var(--color-text-tertiary)"}}>
-            <div style={{fontSize:32,marginBottom:8}}>⚙</div>
-            <p style={{fontSize:14,margin:"0 0 12px"}}>No machines registered yet.</p>
-            <button onClick={function(){setView("machines");}} style={{fontSize:13,padding:"8px 16px"}}>Register a Machine</button>
-          </div>
-        )}
-        {active.map(function(m) {
-          return (
-            <div key={m.id} onClick={function(){setEntryMachine(m);setEntryFrom("");setEntryTo("");setEntries({});setEntryStep("range");}}
-              style={Object.assign({},card,{cursor:"pointer",display:"flex",justifyContent:"space-between",alignItems:"center"})}>
+      <div style={S.page}>
+        <div style={{ padding: '16px 0 8px', fontSize: 16, fontWeight: 700 }}>Saved Reports</div>
+        {reports.length === 0 && <div style={{ color: C.dim, fontSize: 13 }}>No saved reports yet. Generate one in the Reports tab.</div>}
+        {reports.map(r => (
+          <div key={r.id} style={{ ...S.card, cursor: 'pointer' }} onClick={() => setViewingRpt(r)}>
+            <div style={S.flex}>
               <div>
-                <div style={{fontSize:15,fontWeight:600,color:"var(--color-text-primary)"}}>{m.name}</div>
-                <div style={{fontSize:12,color:"var(--color-text-tertiary)",marginTop:2}}>{DAY_FULL[m.startDay]} → {DAY_FULL[m.breakDay]}</div>
+                <div style={{ fontWeight: 600, fontSize: 14 }}>{r.machineName}</div>
+                <div style={S.tag}>
+                  {r.type} · {fmtShort(r.from)}{r.from !== r.to ? ' – ' + fmtShort(r.to) : ''}
+                </div>
               </div>
-              <span style={{fontSize:16,color:"var(--color-text-tertiary)"}}>→</span>
+              <span style={{ color: C.blue, fontSize: 14 }}>›</span>
             </div>
-          );
-        })}
+          </div>
+        ))}
       </div>
     );
   }
 
-  // ── ENTRY STEP 2 — Select date range ──────────────────────────
-  if (view==="entry" && entryStep==="range") {
-    const rangeErr = entryFrom&&entryTo&&new Date(entryTo)<new Date(entryFrom) ? "End date must be after start date." : null;
-    const dayCount  = entryFrom&&entryTo&&!rangeErr ? buildDays(entryFrom,entryTo).length : 0;
+  function renderSettings() {
     return (
-      <div style={Object.assign({},wrap,{maxWidth:480})}>
-        <Nav/>
-        <div style={{display:"flex",alignItems:"center",gap:10,marginBottom:"1rem"}}>
-          <button onClick={function(){setEntryStep("machine");}} style={{fontSize:13,padding:"5px 10px"}}>← Back</button>
-          <div>
-            <h2 style={{fontSize:18,fontWeight:600,margin:0,color:"var(--color-text-primary)"}}>{entryMachine&&entryMachine.name}</h2>
-            <p style={{fontSize:13,color:"var(--color-text-secondary)",margin:"2px 0 0"}}>Step 2 of 3 — Select date range</p>
+      <div style={S.page}>
+        <div style={{ padding: '16px 0 8px', fontSize: 16, fontWeight: 700 }}>Settings</div>
+
+        <div style={S.card}>
+          <div style={{ fontWeight: 600, marginBottom: 12 }}>🔔 Shift Reminders</div>
+          <div style={S.flex}>
+            <span style={{ fontSize: 14 }}>Enable notifications</span>
+            <input type="checkbox" checked={notif.enabled}
+              onChange={e => { if (e.target.checked) requestNotif(); else saveNotif({ ...notif, enabled: false }); }}
+              style={{ transform: 'scale(1.4)', accentColor: C.blue }} />
           </div>
-        </div>
-        <div style={{background:"var(--color-background-primary)",border:"0.5px solid var(--color-border-tertiary)",borderRadius:"var(--border-radius-lg)",padding:"1.25rem"}}>
-          <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12,marginBottom:"1rem"}}>
-            <div>
-              <label style={{fontSize:13,color:"var(--color-text-secondary)",display:"block",marginBottom:6}}>From</label>
-              <input type="date" value={entryFrom} onChange={function(ev){setEntryFrom(ev.target.value);}} style={{width:"100%",boxSizing:"border-box"}}/>
-            </div>
-            <div>
-              <label style={{fontSize:13,color:"var(--color-text-secondary)",display:"block",marginBottom:6}}>To</label>
-              <input type="date" value={entryTo} onChange={function(ev){setEntryTo(ev.target.value);}} style={{width:"100%",boxSizing:"border-box",borderColor:rangeErr?"var(--color-border-danger)":undefined}}/>
-            </div>
-          </div>
-          {rangeErr && <p style={{fontSize:12,color:"var(--color-text-danger)",margin:"-4px 0 12px"}}>{rangeErr}</p>}
-          {dayCount>0 && !rangeErr && (
-            <div style={{background:"var(--color-background-secondary)",borderRadius:6,padding:"8px 12px",marginBottom:"1rem",fontSize:13,color:"var(--color-text-secondary)"}}>
-              📅 <strong style={{color:"var(--color-text-primary)"}}>{dayCount} day{dayCount>1?"s":""}</strong>
-              {" — "+fmtD(entryFrom,{weekday:"short",day:"numeric",month:"short"})+" to "+fmtD(entryTo,{weekday:"short",day:"numeric",month:"short"})}
+          {notif.enabled && (
+            <div style={{ marginTop: 14 }}>
+              <label style={S.label}>Day shift reminder</label>
+              <input type="time" style={S.input} value={notif.dayTime} onChange={e => saveNotif({ ...notif, dayTime: e.target.value })} />
+              <label style={S.label}>Night shift reminder</label>
+              <input type="time" style={S.input} value={notif.nightTime} onChange={e => saveNotif({ ...notif, nightTime: e.target.value })} />
             </div>
           )}
-          <button onClick={function(){
-            const days = buildDays(entryFrom, entryTo);
-            setEntryDays(days);
-            loadEntryRange(entryMachine.id, days);
-            setEntryStep("list");
-          }} disabled={!entryFrom||!entryTo||!!rangeErr||dayCount===0}
-            style={{width:"100%",padding:"10px",fontWeight:500,fontSize:14}}>
-            Continue → Enter readings
-          </button>
         </div>
-      </div>
-    );
-  }
 
-  // ── ENTRY STEP 3 — Day list ───────────────────────────────────
-  if (view==="entry" && entryStep==="list") {
-    const inp = { width:"100%", boxSizing:"border-box", fontSize:13 };
-    return (
-      <div style={wrap}>
-        <Nav/>
-        <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:"1rem"}}>
-          <div style={{display:"flex",alignItems:"center",gap:10}}>
-            <button onClick={function(){setEntryStep("range");setSaveStatus("");}} style={{fontSize:13,padding:"5px 10px"}}>← Back</button>
-            <div>
-              <h2 style={{fontSize:18,fontWeight:600,margin:0,color:"var(--color-text-primary)"}}>{entryMachine&&entryMachine.name}</h2>
-              <p style={{fontSize:13,color:"var(--color-text-secondary)",margin:"2px 0 0"}}>
-                {fmtD(entryFrom,{day:"numeric",month:"short"})} — {fmtD(entryTo,{day:"numeric",month:"short",year:"numeric"})} · {entryDays.length} day{entryDays.length>1?"s":""}
-              </p>
-            </div>
+        <div style={S.card}>
+          <div style={{ fontWeight: 600, marginBottom: 8 }}>💾 Storage & Sync</div>
+          <div style={{ fontSize: 13, color: C.muted }}>
+            {isOnline ? '🌐 Online — data is syncing' : '📴 Offline — data stored locally'}
           </div>
-        </div>
-
-        <div style={{display:"grid",gridTemplateColumns:"72px 1fr 1fr 8px 1fr 1fr 68px",gap:"4px 8px",marginBottom:6,padding:"0 1rem"}}>
-          <span/>
-          <span style={{fontSize:11,color:"#A0752B",textAlign:"center",background:"#FDF3E1",borderRadius:4,padding:"2px 0"}}>☀ Start</span>
-          <span style={{fontSize:11,color:"#A0752B",textAlign:"center",background:"#FDF3E1",borderRadius:4,padding:"2px 0"}}>☀ End</span>
-          <span/>
-          <span style={{fontSize:11,color:"#4640A0",textAlign:"center",background:"#EEEDFE",borderRadius:4,padding:"2px 0"}}>☾ Start</span>
-          <span style={{fontSize:11,color:"#4640A0",textAlign:"center",background:"#EEEDFE",borderRadius:4,padding:"2px 0"}}>☾ End</span>
-          <span style={{fontSize:11,color:"var(--color-text-tertiary)",textAlign:"right"}}>Billed</span>
-        </div>
-
-        {entryDays.map(function(d) {
-          const e    = entries[d] || emptyRow();
-          const dh   = e.noWork ? null : calcH(e.dayStart, e.dayEnd);
-          const nh   = e.noWork ? null : calcH(e.nightStart, e.nightEnd);
-          const db   = billH(dh), nb = billH(nh);
-          const dErr = !e.noWork && e.dayStart && e.dayEnd && parseFloat(e.dayEnd) < parseFloat(e.dayStart);
-          const nErr = !e.noWork && e.nightStart && e.nightEnd && parseFloat(e.nightEnd) < parseFloat(e.nightStart);
-          const dateObj = new Date(d+"T12:00:00");
-          const isWeekend = dateObj.getDay()===0 || dateObj.getDay()===6;
-          return (
-            <div key={d} style={Object.assign({},card,{padding:"0.75rem 1rem",marginBottom:6})}>
-              <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:6}}>
-                <div>
-                  <span style={{fontSize:13,fontWeight:600,color:isWeekend?"var(--color-text-secondary)":"var(--color-text-primary)"}}>{DAY_NAMES[dateObj.getDay()]}</span>
-                  <span style={{fontSize:12,color:"var(--color-text-tertiary)",marginLeft:6}}>{fmtD(d,{day:"numeric",month:"short"})}</span>
-                </div>
-                <button onClick={function(){toggleNW(d);}}
-                  style={{fontSize:11,padding:"2px 8px",background:e.noWork?"#FEE9E9":"var(--color-background-secondary)",color:e.noWork?"#9B1C1C":"var(--color-text-secondary)",border:"0.5px solid "+(e.noWork?"#FECACA":"var(--color-border-tertiary)"),borderRadius:4,cursor:"pointer"}}>
-                  {e.noWork ? "Undo" : "No work"}
-                </button>
-              </div>
-              {e.noWork ? (
-                <input type="text" placeholder="Reason (e.g. breakdown, holiday...)" value={e.reason}
-                  onChange={function(ev){setReason(d,ev.target.value);}} style={inp}/>
-              ) : (
-                <div>
-                  <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 8px 1fr 1fr 68px",gap:"4px 8px"}}>
-                    <input type="text" inputMode="decimal" placeholder="0.0" value={e.dayStart} onChange={function(ev){setEF(d,"dayStart",ev.target.value);}} style={Object.assign({},inp,{borderColor:dErr?"var(--color-border-danger)":undefined})}/>
-                    <input type="text" inputMode="decimal" placeholder="0.0" value={e.dayEnd}   onChange={function(ev){setEF(d,"dayEnd",ev.target.value);}}   style={Object.assign({},inp,{borderColor:dErr?"var(--color-border-danger)":undefined})}/>
-                    <div style={{width:1,background:"var(--color-border-tertiary)",margin:"0 auto"}}/>
-                    <input type="text" inputMode="decimal" placeholder="0.0" value={e.nightStart} onChange={function(ev){setEF(d,"nightStart",ev.target.value);}} style={Object.assign({},inp,{borderColor:nErr?"var(--color-border-danger)":undefined})}/>
-                    <input type="text" inputMode="decimal" placeholder="0.0" value={e.nightEnd}   onChange={function(ev){setEF(d,"nightEnd",ev.target.value);}}   style={Object.assign({},inp,{borderColor:nErr?"var(--color-border-danger)":undefined})}/>
-                    <div style={{textAlign:"right",fontSize:13,fontWeight:600,color:"var(--color-text-primary)",paddingTop:5}}>
-                      {(db!==null||nb!==null) ? ((db||0)+(nb||0))+"h" : "—"}
-                    </div>
-                  </div>
-                  {(dh!==null||nh!==null) && (
-                    <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 8px 1fr 1fr 68px",gap:"2px 8px",marginTop:3}}>
-                      <span style={{gridColumn:"1/3",fontSize:10,color:dErr?"var(--color-text-danger)":"var(--color-text-tertiary)"}}>{dErr?"end<start":dh!==null?"= "+fmt(dh):""}</span>
-                      <span/>
-                      <span style={{gridColumn:"4/6",fontSize:10,color:nErr?"var(--color-text-danger)":"var(--color-text-tertiary)"}}>{nErr?"end<start":nh!==null?"= "+fmt(nh):""}</span>
-                    </div>
-                  )}
-                </div>
-              )}
-            </div>
-          );
-        })}
-
-        <div style={{position:"sticky",bottom:0,background:"var(--color-background-primary)",borderTop:"0.5px solid var(--color-border-tertiary)",padding:"0.875rem 0",marginTop:"0.5rem"}}>
-          {!isOnline && <p style={{fontSize:11,color:"#A0752B",margin:"0 0 6px",textAlign:"center"}}>📴 Offline — will sync when back online</p>}
-          <button onClick={saveAllEntries} disabled={saving}
-            style={{width:"100%",padding:"11px",fontWeight:600,fontSize:14,background:saveStatus==="saved"?"#E1F5EE":undefined,color:saveStatus==="saved"?"#0F6E56":undefined}}>
-            {saveStatus==="saving" ? "Saving..." : saveStatus==="saved" ? "✓ All entries saved!" : "Save All Entries"}
-          </button>
-        </div>
-      </div>
-    );
-  }
-
-  // ── MACHINES LIST ─────────────────────────────────────────────
-  if (view==="machines") {
-    return (
-      <div style={wrap}>
-        <Nav/>
-        <StatusBar/>
-        <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:"1rem"}}>
-          <h2 style={{fontSize:18,fontWeight:600,margin:0,color:"var(--color-text-primary)"}}>Machines</h2>
-          <button onClick={function(){setEditM(null);setMName("");setMStart(1);setMBreak(6);setView("machineForm");}} style={{fontSize:13,padding:"7px 16px",fontWeight:500}}>+ Register Machine</button>
-        </div>
-        {machines.length===0 && (
-          <div style={{textAlign:"center",padding:"3rem 0",color:"var(--color-text-tertiary)"}}>
-            <div style={{fontSize:32,marginBottom:8}}>⚙</div>
-            <p style={{fontSize:14}}>No machines registered yet.</p>
-          </div>
-        )}
-        {machines.map(function(m) {
-          return (
-            <div key={m.id} style={Object.assign({},card,{opacity:m.active?1:0.6})}>
-              <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start"}}>
-                <div>
-                  <div style={{fontSize:15,fontWeight:600,color:"var(--color-text-primary)"}}>{m.name}</div>
-                  <div style={{fontSize:13,color:"var(--color-text-secondary)",marginTop:3}}>
-                    {DAY_FULL[m.startDay]} → {DAY_FULL[m.breakDay]}
-                    <span style={{marginLeft:8,fontSize:11,background:m.active?"#E1F5EE":"var(--color-background-secondary)",color:m.active?"#0F6E56":"var(--color-text-tertiary)",padding:"1px 6px",borderRadius:4}}>
-                      {m.active?"Active":"Inactive"}
-                    </span>
-                  </div>
-                </div>
-                <div style={{display:"flex",gap:6,flexShrink:0}}>
-                  <button onClick={function(){setEditM(m);setMName(m.name);setMStart(m.startDay);setMBreak(m.breakDay);setView("machineForm");}} style={{fontSize:12,padding:"4px 10px"}}>Edit</button>
-                  <button onClick={function(){saveMachines(machines.map(function(x){return x.id===m.id?Object.assign({},x,{active:!x.active}):x;}));}} style={{fontSize:12,padding:"4px 10px"}}>{m.active?"Deactivate":"Activate"}</button>
-                  <button onClick={function(){saveMachines(machines.filter(function(x){return x.id!==m.id;}));}} style={{fontSize:12,padding:"4px 10px",color:"var(--color-text-danger)"}}>Delete</button>
-                </div>
-              </div>
-            </div>
-          );
-        })}
-      </div>
-    );
-  }
-
-  // ── MACHINE FORM ──────────────────────────────────────────────
-  if (view==="machineForm") {
-    return (
-      <div style={Object.assign({},wrap,{maxWidth:480})}>
-        <Nav/>
-        <div style={{display:"flex",alignItems:"center",gap:10,marginBottom:"1rem"}}>
-          <button onClick={function(){setView("machines");}} style={{fontSize:13,padding:"5px 10px"}}>← Back</button>
-          <h2 style={{fontSize:18,fontWeight:600,margin:0,color:"var(--color-text-primary)"}}>{editM?"Edit Machine":"Register Machine"}</h2>
-        </div>
-        <div style={{background:"var(--color-background-primary)",border:"0.5px solid var(--color-border-tertiary)",borderRadius:"var(--border-radius-lg)",padding:"1.25rem"}}>
-          <label style={{fontSize:13,color:"var(--color-text-secondary)",display:"block",marginBottom:6}}>Machine name / ID</label>
-          <input type="text" placeholder="e.g. Excavator #7" value={mName} onChange={function(e){setMName(e.target.value);}} style={{width:"100%",boxSizing:"border-box",marginBottom:"1.25rem"}}/>
-          <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12,marginBottom:"1.25rem"}}>
-            <div>
-              <label style={{fontSize:13,color:"var(--color-text-secondary)",display:"block",marginBottom:6}}>Start day</label>
-              <select value={mStart} onChange={function(e){setMStart(parseInt(e.target.value));}} style={sel}>
-                {DAY_FULL.map(function(d,i){return <option key={i} value={i}>{d}</option>;})}
-              </select>
-            </div>
-            <div>
-              <label style={{fontSize:13,color:"var(--color-text-secondary)",display:"block",marginBottom:6}}>Breaking day</label>
-              <select value={mBreak} onChange={function(e){setMBreak(parseInt(e.target.value));}} style={sel}>
-                {DAY_FULL.map(function(d,i){return <option key={i} value={i}>{d}</option>;})}
-              </select>
-            </div>
-          </div>
-          <div style={{background:"var(--color-background-secondary)",borderRadius:"var(--border-radius-md)",padding:"10px 12px",marginBottom:"1.25rem",fontSize:13,color:"var(--color-text-secondary)"}}>
-            Works from <strong>{DAY_FULL[mStart]}</strong> to <strong>{DAY_FULL[mBreak]}</strong> (6 days).
-          </div>
-          <button onClick={async function(){
-            if (!mName.trim()) return;
-            let list;
-            if (editM) { list = machines.map(function(m){return m.id===editM.id?Object.assign({},m,{name:mName.trim(),startDay:parseInt(mStart),breakDay:parseInt(mBreak)}):m;}); }
-            else { list = machines.concat([{id:Date.now().toString(),name:mName.trim(),startDay:parseInt(mStart),breakDay:parseInt(mBreak),active:true}]); }
-            await saveMachines(list); setView("machines");
-          }} disabled={!mName.trim()} style={{width:"100%",padding:"10px",fontWeight:500,fontSize:14}}>
-            {editM ? "Save Changes" : "Register Machine"}
-          </button>
-        </div>
-      </div>
-    );
-  }
-
-  // ── REPORTS ───────────────────────────────────────────────────
-  if (view==="reports") {
-    const actM = machines.filter(function(m){return m.active;});
-    const selM = machines.find(function(m){return m.id===rMid;});
-    const period = rType==="daily" ? fmtD(rDate,{day:"numeric",month:"short",year:"numeric"})
-      : rType==="weekly"&&selM ? (function(){const r=getWeekRange(selM,rDate);return fmtD(r.start,{day:"numeric",month:"short"})+" – "+fmtD(r.end,{day:"numeric",month:"short",year:"numeric"});})()
-      : rFrom&&rTo ? fmtD(rFrom,{day:"numeric",month:"short"})+" – "+fmtD(rTo,{day:"numeric",month:"short",year:"numeric"}) : "";
-    return (
-      <div style={wrap}>
-        <Nav/>
-        <StatusBar/>
-        <h2 style={{fontSize:18,fontWeight:600,margin:"0 0 1rem",color:"var(--color-text-primary)"}}>Generate Report</h2>
-        <div style={{background:"var(--color-background-primary)",border:"0.5px solid var(--color-border-tertiary)",borderRadius:"var(--border-radius-lg)",padding:"1.25rem",marginBottom:"1rem"}}>
-          <div style={{display:"flex",gap:6,marginBottom:"1.25rem"}}>
-            {[["daily","📅 Daily"],["weekly","📆 Weekly"],["custom","🗓 Custom"]].map(function(t) {
-              const active = rType===t[0];
-              return (
-                <button key={t[0]} onClick={function(){setRType(t[0]);setRResult("");setRError("");}}
-                  style={{flex:1,padding:"7px",fontSize:13,fontWeight:active?600:400,background:active?"var(--color-background-active)":"var(--color-background-secondary)",borderRadius:6,border:"0.5px solid "+(active?"var(--color-border-secondary)":"var(--color-border-tertiary)"),cursor:"pointer"}}>
-                  {t[1]}
-                </button>
-              );
-            })}
-          </div>
-          <label style={{fontSize:13,color:"var(--color-text-secondary)",display:"block",marginBottom:6}}>Select machine</label>
-          <select value={rMid} onChange={function(e){setRMid(e.target.value);setRResult("");setRError("");}} style={Object.assign({},sel,{marginBottom:"1.25rem"})}>
-            <option value="">— Choose a machine —</option>
-            {actM.map(function(m){return <option key={m.id} value={m.id}>{m.name}</option>;})}
-          </select>
-          {rType==="daily" && (
-            <div style={{marginBottom:"1rem"}}>
-              <label style={{fontSize:13,color:"var(--color-text-secondary)",display:"block",marginBottom:6}}>Date</label>
-              <input type="date" value={rDate} onChange={function(e){setRDate(e.target.value);setRResult("");}} style={{width:"100%",boxSizing:"border-box"}}/>
-            </div>
+          {offQ.length > 0 && (
+            <>
+              <div style={{ fontSize: 12, color: C.dim, marginTop: 6 }}>{offQ.length} entries waiting to sync</div>
+              <button style={{ ...S.btn(), padding: '8px 12px', marginTop: 8 }} onClick={syncQueue}>Sync Now</button>
+            </>
           )}
-          {rType==="weekly" && (
-            <div style={{marginBottom:"1rem"}}>
-              <label style={{fontSize:13,color:"var(--color-text-secondary)",display:"block",marginBottom:6}}>Pick any date within the week</label>
-              <input type="date" value={rDate} onChange={function(e){setRDate(e.target.value);setRResult("");}} style={{width:"100%",boxSizing:"border-box",marginBottom:6}}/>
-              {rDate&&selM&&(function(){
-                const rng=getWeekRange(selM,rDate);
-                return <div style={{fontSize:12,color:"var(--color-text-secondary)",background:"var(--color-background-secondary)",padding:"6px 10px",borderRadius:6}}>{"Week: "+fmtD(rng.start,{weekday:"short",day:"numeric",month:"short"})+" → "+fmtD(rng.end,{weekday:"short",day:"numeric",month:"short"})}</div>;
-              })()}
-            </div>
-          )}
-          {rType==="custom" && (
-            <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12,marginBottom:"1rem"}}>
-              <div>
-                <label style={{fontSize:13,color:"var(--color-text-secondary)",display:"block",marginBottom:6}}>From</label>
-                <input type="date" value={rFrom} onChange={function(e){setRFrom(e.target.value);setRResult("");}} style={{width:"100%",boxSizing:"border-box"}}/>
-              </div>
-              <div>
-                <label style={{fontSize:13,color:"var(--color-text-secondary)",display:"block",marginBottom:6}}>To</label>
-                <input type="date" value={rTo} onChange={function(e){setRTo(e.target.value);setRResult("");}} style={{width:"100%",boxSizing:"border-box"}}/>
-              </div>
-            </div>
-          )}
-          <button onClick={generateReport} disabled={!rMid||rLoading} style={{width:"100%",padding:"10px",fontWeight:500,fontSize:14}}>
-            {rLoading ? "Generating..." : "Generate Report ↗"}
+        </div>
+
+        <div style={S.card}>
+          <div style={{ fontWeight: 600, marginBottom: 6 }}>ℹ About</div>
+          <div style={{ fontSize: 13, color: C.muted }}>Machine Hours Tracker v2.0</div>
+          <div style={{ fontSize: 12, color: C.dim, marginTop: 2 }}>6-day week · Odometer-based billing · Groq AI reports</div>
+        </div>
+      </div>
+    );
+  }
+
+  // ─── Nav & shell ────────────────────────────────────────────────────────────
+  const NAV = [
+    { id: 'home',     icon: '🏠', label: 'Home' },
+    { id: 'entry',    icon: '✏️',  label: 'Entry' },
+    { id: 'machines', icon: '⚙',  label: 'Machines' },
+    { id: 'reports',  icon: '📊', label: 'Reports' },
+    { id: 'history',  icon: '🕓', label: 'History' },
+  ];
+
+  const TITLES = { home: 'MHT', entry: 'New Entry', machines: 'Machines', reports: 'Reports', history: 'History', settings: 'Settings' };
+
+  return (
+    <div style={S.app}>
+      {/* Header */}
+      <div style={S.hdr}>
+        <span style={{ fontSize: 15, fontWeight: 700, color: '#f1f5f9' }}>{TITLES[view] || 'MHT'}</span>
+        <div style={{ display: 'flex', gap: 14, alignItems: 'center' }}>
+          <span style={{ fontSize: 11, color: isOnline ? C.green : C.amber }}>
+            {isOnline ? '● Online' : '● Offline'}
+          </span>
+          <button onClick={() => setView('settings')} style={{ background: 'none', border: 'none', color: C.muted, cursor: 'pointer', fontSize: 20, lineHeight: 1 }}>⚙</button>
+        </div>
+      </div>
+
+      {/* Page */}
+      {view === 'home'     && renderHome()}
+      {view === 'entry'    && renderEntry()}
+      {view === 'machines' && renderMachines()}
+      {view === 'reports'  && renderReports()}
+      {view === 'history'  && renderHistory()}
+      {view === 'settings' && renderSettings()}
+
+      {/* Bottom nav */}
+      <nav style={S.nav}>
+        {NAV.map(n => (
+          <button
+            key={n.id}
+            style={S.navBtn(view === n.id)}
+            onClick={() => n.id === 'entry' ? startEntry() : setView(n.id)}
+          >
+            <span style={{ fontSize: 20 }}>{n.icon}</span>
+            <span>{n.label}</span>
           </button>
-          {rError && <p style={{fontSize:13,color:"var(--color-text-danger)",margin:"8px 0 0"}}>{rError}</p>}
-        </div>
-        {rLoading && (
-          <div style={{display:"flex",alignItems:"center",gap:10,color:"var(--color-text-secondary)",fontSize:14,padding:"1rem"}}>
-            <span style={{display:"inline-block",width:14,height:14,border:"2px solid var(--color-border-secondary)",borderTopColor:"var(--color-text-secondary)",borderRadius:"50%",animation:"spin 0.8s linear infinite"}}/>
-            Analyzing data...
-          </div>
-        )}
-        {rResult && (
-          <div style={{background:"var(--color-background-primary)",border:"0.5px solid var(--color-border-tertiary)",borderRadius:"var(--border-radius-lg)",padding:"1.25rem"}}>
-            <p style={{fontSize:13,fontWeight:500,color:"var(--color-text-secondary)",margin:"0 0 0.75rem"}}>
-              {(rType.charAt(0).toUpperCase()+rType.slice(1))+" Report — "+(selM?selM.name:"")}
-            </p>
-            <div style={{fontSize:14,lineHeight:1.75,color:"var(--color-text-primary)"}} dangerouslySetInnerHTML={{__html:renderMD(rResult)}}/>
-            <DownloadBar report={rResult} name={selM?selM.name:"Machine"} type={rType.charAt(0).toUpperCase()+rType.slice(1)} period={period}/>
-          </div>
-        )}
-        <style>{"@keyframes spin{to{transform:rotate(360deg);}}"}</style>
-      </div>
-    );
-  }
-
-  // ── HISTORY LIST ──────────────────────────────────────────────
-  if (view==="history" && !selReport) {
-    return (
-      <div style={wrap}>
-        <Nav/>
-        <StatusBar/>
-        <h2 style={{fontSize:18,fontWeight:600,margin:"0 0 1rem",color:"var(--color-text-primary)"}}>Report History</h2>
-        {savedReports.length===0 && (
-          <div style={{textAlign:"center",padding:"3rem 0",color:"var(--color-text-tertiary)"}}>
-            <div style={{fontSize:32,marginBottom:8}}>📋</div>
-            <p style={{fontSize:14}}>No reports generated yet.</p>
-          </div>
-        )}
-        {savedReports.map(function(r) {
-          const d  = new Date(r.savedAt);
-          const tl = r.type==="daily"?"Daily":r.type==="weekly"?"Weekly":"Custom";
-          return (
-            <div key={r.id} onClick={function(){setSelReport(r);}} style={Object.assign({},card,{cursor:"pointer"})}>
-              <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start"}}>
-                <div>
-                  <div style={{fontSize:15,fontWeight:500,color:"var(--color-text-primary)"}}>{r.machineName}</div>
-                  <div style={{fontSize:13,color:"var(--color-text-secondary)",marginTop:3}}>
-                    <span style={{background:"var(--color-background-secondary)",padding:"1px 6px",borderRadius:4,marginRight:6,fontSize:12}}>{tl}</span>
-                    {r.startDate===r.endDate ? fmtD(r.startDate,{day:"numeric",month:"short",year:"numeric"}) : fmtD(r.startDate,{day:"numeric",month:"short"})+" → "+fmtD(r.endDate,{day:"numeric",month:"short",year:"numeric"})}
-                  </div>
-                </div>
-                <div style={{textAlign:"right",flexShrink:0}}>
-                  <div style={{fontSize:11,color:"var(--color-text-tertiary)"}}>{d.toLocaleDateString("en-GB",{day:"numeric",month:"short"})} {d.toLocaleTimeString("en-GB",{hour:"2-digit",minute:"2-digit"})}</div>
-                  <button onClick={function(ev){
-                    ev.stopPropagation();
-                    store.delete("mht_rpt:"+r.id);
-                    setSavedReports(function(prev){return prev.filter(function(x){return x.id!==r.id;});});
-                  }} style={{fontSize:11,padding:"2px 8px",marginTop:4,color:"var(--color-text-tertiary)",background:"transparent",border:"0.5px solid var(--color-border-tertiary)",borderRadius:4,cursor:"pointer"}}>
-                    Delete
-                  </button>
-                </div>
-              </div>
-            </div>
-          );
-        })}
-      </div>
-    );
-  }
-
-  // ── HISTORY DETAIL ────────────────────────────────────────────
-  if (view==="history" && selReport) {
-    const tl = selReport.type==="daily"?"Daily":selReport.type==="weekly"?"Weekly":"Custom";
-    return (
-      <div style={wrap}>
-        <Nav/>
-        <div style={{display:"flex",alignItems:"center",gap:10,marginBottom:"1rem"}}>
-          <button onClick={function(){setSelReport(null);}} style={{fontSize:13,padding:"5px 10px"}}>← Back</button>
-          <div>
-            <div style={{fontSize:16,fontWeight:600,color:"var(--color-text-primary)"}}>{selReport.machineName}</div>
-            <div style={{fontSize:12,color:"var(--color-text-secondary)"}}>{tl} Report · {selReport.startDate===selReport.endDate ? fmtD(selReport.startDate,{day:"numeric",month:"long",year:"numeric"}) : fmtD(selReport.startDate,{day:"numeric",month:"short"})+" → "+fmtD(selReport.endDate,{day:"numeric",month:"short",year:"numeric"})}</div>
-          </div>
-        </div>
-        <div style={{background:"var(--color-background-primary)",border:"0.5px solid var(--color-border-tertiary)",borderRadius:"var(--border-radius-lg)",padding:"1.25rem"}}>
-          <div style={{fontSize:14,lineHeight:1.75,color:"var(--color-text-primary)"}} dangerouslySetInnerHTML={{__html:renderMD(selReport.report)}}/>
-          <DownloadBar report={selReport.report} name={selReport.machineName} type={tl} period={selReport.startDate===selReport.endDate ? fmtD(selReport.startDate,{day:"numeric",month:"short",year:"numeric"}) : fmtD(selReport.startDate,{day:"numeric",month:"short"})+" – "+fmtD(selReport.endDate,{day:"numeric",month:"short",year:"numeric"})}/>
-        </div>
-        <style>{"@keyframes spin{to{transform:rotate(360deg);}}"}</style>
-      </div>
-    );
-  }
-
-  return null;
+        ))}
+      </nav>
+    </div>
+  );
 }
