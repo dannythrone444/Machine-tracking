@@ -135,6 +135,115 @@ async function generateReport(entries, machine, dateLabel) {
   return text;
 }
 
+// ─── WhatsApp formatter ───────────────────────────────────────────────────────
+function formatForWhatsApp(text, machineName, dateLabel) {
+  const lines = text.split('\n');
+  const out = [];
+
+  out.push('🚧 *MACHINE HOURS REPORT*');
+  if (machineName) out.push('🔧 Machine: *' + machineName + '*');
+  if (dateLabel)   out.push('📅 Period: ' + dateLabel);
+  out.push('');
+
+  lines.forEach(line => {
+    const t = line.trim();
+    if (!t) { out.push(''); return; }
+
+    // Section headers
+    if (/^1\.\s+Daily/i.test(t)) {
+      out.push('━━━━━━━━━━━━━━━━━━━━');
+      out.push('📋 *DAILY REPORT*');
+      out.push('━━━━━━━━━━━━━━━━━━━━');
+      return;
+    }
+    if (/^2\.\s+Weekly/i.test(t)) {
+      out.push('');
+      out.push('━━━━━━━━━━━━━━━━━━━━');
+      out.push('📊 *WEEKLY REPORT*');
+      out.push('━━━━━━━━━━━━━━━━━━━━');
+      return;
+    }
+    if (/^3\.\s+Overall/i.test(t)) {
+      out.push('');
+      out.push('━━━━━━━━━━━━━━━━━━━━');
+      out.push('💬 *SUMMARY*');
+      out.push('━━━━━━━━━━━━━━━━━━━━');
+      return;
+    }
+
+    // Week header
+    if (/^Week\s+\d+/i.test(t)) {
+      out.push('');
+      out.push('📆 *' + t + '*');
+      return;
+    }
+
+    // Sub-headers
+    if (t.startsWith('####')) {
+      const label = t.replace(/^#+\s*/, '');
+      const icon = label.toLowerCase().includes('day') && !label.toLowerCase().includes('weekly') ? '☀️' :
+                   label.toLowerCase().includes('night') ? '🌙' : '📈';
+      out.push(icon + ' *' + label + '*');
+      return;
+    }
+
+    // Bullet lines
+    if (t.startsWith('•')) {
+      const isNoWork = t.includes('NO WORK');
+      const content = t.replace('• ', '');
+      // Bold the hours value e.g. "8h" or "NO WORK"
+      const formatted = content.replace(/(\d+h)/g, '*$1*');
+      out.push((isNoWork ? '❌ ' : '  · ') + formatted);
+      return;
+    }
+
+    // Total lines
+    if (/^Total Day Shift:/i.test(t)) {
+      out.push('✅ *' + t + '*'); return;
+    }
+    if (/^Total Night Shift:/i.test(t)) {
+      out.push('✅ *' + t + '*'); return;
+    }
+    if (/^Combined Week Total:/i.test(t)) {
+      out.push('🏆 *' + t + '*'); return;
+    }
+    if (/^Total|^Combined/i.test(t)) {
+      out.push('✅ *' + t + '*'); return;
+    }
+
+    // Divider
+    if (t === '---') { out.push(''); return; }
+
+    // Date line in daily section
+    if (/^(Mon|Tue|Wed|Thu|Fri|Sat|Sun),/.test(t)) {
+      out.push('');
+      out.push('📅 *' + t + '*');
+      return;
+    }
+
+    // Shift detail lines
+    if (/^Day Shift:|^Night Shift:/.test(t)) {
+      const icon = t.startsWith('Day') ? '☀️' : '🌙';
+      // Bold the billed hours
+      const formatted = t.replace(/Billed:\s*(\d+h)/, 'Billed: *$1*');
+      out.push(icon + ' ' + formatted);
+      return;
+    }
+
+    // No Work in daily
+    if (/No Work/i.test(t)) {
+      out.push('❌ ' + t); return;
+    }
+
+    // Summary paragraph
+    out.push(t);
+  });
+
+  out.push('');
+  out.push('_Sent from Machine Hours Tracker_');
+  return out.join('\n');
+}
+
 // ─── Report renderer ─────────────────────────────────────────────────────────
 function ReportView({ text, C }) {
   if (!text) return null;
@@ -368,6 +477,7 @@ export default function App() {
   // ── History
   const [reports,      setReports]      = useState([]);
   const [viewingRpt,   setViewingRpt]   = useState(null);
+  const [copied,       setCopied]       = useState(false);
 
   // ── Load on mount
   useEffect(() => {
@@ -512,6 +622,24 @@ export default function App() {
     localStorage.setItem('mht_rpt:' + id, JSON.stringify(rpt));
     loadReports();
     alert('Report saved to History!');
+  }
+
+  function copyForWhatsApp(reportText, machineName, dateLabel) {
+    const wa = formatForWhatsApp(reportText, machineName, dateLabel);
+    navigator.clipboard.writeText(wa).then(() => {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2500);
+    }).catch(() => {
+      // fallback: select a textarea
+      const ta = document.createElement('textarea');
+      ta.value = wa;
+      document.body.appendChild(ta);
+      ta.select();
+      document.execCommand('copy');
+      document.body.removeChild(ta);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2500);
+    });
   }
 
   function downloadTxt(content, name) {
@@ -824,8 +952,20 @@ export default function App() {
             <div style={{ ...S.card, maxHeight: 520, overflowY: 'auto', marginBottom: 10 }}>
               <ReportView text={rResult} C={C} />
             </div>
+            <button
+              style={{ ...S.btn('success'), background: '#25D366', marginBottom: 8 }}
+              onClick={() => {
+                const machine = machines.find(m => m.id === rMachine);
+                const from = rType === 'daily' ? rFrom : rFrom;
+                const to   = rType === 'daily' ? rFrom : rTo;
+                const label = from === to ? fmtLong(from) : fmtShort(from) + ' – ' + fmtShort(to);
+                copyForWhatsApp(rResult, machine?.name, label);
+              }}
+            >
+              {copied ? '✓ Copied! Paste into WhatsApp' : '📲 Copy for WhatsApp'}
+            </button>
             <div style={S.row}>
-              <button style={{ ...S.btn('success'), marginBottom: 0, flex: 1 }} onClick={saveReport}>💾 Save</button>
+              <button style={{ ...S.btn('primary'), marginBottom: 0, flex: 1 }} onClick={saveReport}>💾 Save</button>
               <button style={{ ...S.btn(), marginBottom: 0, flex: 1 }} onClick={() => downloadTxt(rResult, 'report-' + rFrom)}>⬇ Download</button>
             </div>
           </>
@@ -847,6 +987,15 @@ export default function App() {
         <div style={{ ...S.card, maxHeight: 520, overflowY: 'auto' }}>
           <ReportView text={viewingRpt.content} C={C} />
         </div>
+        <button
+          style={{ ...S.btn('success'), background: '#25D366' }}
+          onClick={() => {
+            const label = viewingRpt.from === viewingRpt.to ? fmtLong(viewingRpt.from) : fmtShort(viewingRpt.from) + ' – ' + fmtShort(viewingRpt.to);
+            copyForWhatsApp(viewingRpt.content, viewingRpt.machineName, label);
+          }}
+        >
+          {copied ? '✓ Copied! Paste into WhatsApp' : '📲 Copy for WhatsApp'}
+        </button>
         <button style={S.btn()} onClick={() => downloadTxt(viewingRpt.content, 'report-' + viewingRpt.from)}>⬇ Download</button>
         <button style={S.btn('danger')} onClick={() => {
           if (!window.confirm('Delete this report?')) return;
