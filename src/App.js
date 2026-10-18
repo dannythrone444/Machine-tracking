@@ -135,8 +135,132 @@ async function generateReport(entries, machine, dateLabel) {
   return text;
 }
 
-// ─── Styles ───────────────────────────────────────────────────────────────────
-const C = {
+// ─── Report renderer ─────────────────────────────────────────────────────────
+function ReportView({ text, C }) {
+  if (!text) return null;
+  const lines = text.split('\n');
+
+  const elements = [];
+  let i = 0;
+
+  while (i < lines.length) {
+    const line = lines[i];
+    const trim = line.trim();
+
+    // Section header: "1. Daily Report" / "2. Weekly Report" / "3. Overall Summary"
+    if (/^\d+\.\s+(Daily|Weekly|Overall)/i.test(trim)) {
+      const num = trim.match(/^(\d+)/)[1];
+      const colors = { '1': C.blue, '2': C.green, '3': C.amber };
+      const accent = colors[num] || C.blue;
+      elements.push(
+        <div key={i} style={{ background: accent + '18', border: '1px solid ' + accent + '44', borderRadius: 10, padding: '10px 14px', marginTop: 16, marginBottom: 8 }}>
+          <span style={{ fontSize: 16, fontWeight: 700, color: accent }}>{trim}</span>
+        </div>
+      );
+      i++; continue;
+    }
+
+    // Week header: "Week N (date – date)"
+    if (/^Week\s+\d+/i.test(trim)) {
+      elements.push(
+        <div key={i} style={{ fontSize: 14, fontWeight: 700, color: C.text, marginTop: 12, marginBottom: 6 }}>{trim}</div>
+      );
+      i++; continue;
+    }
+
+    // Sub-header: "#### Day Shifts" / "#### Night Shifts" / "#### Weekly Totals"
+    if (trim.startsWith('####')) {
+      const label = trim.replace(/^#+\s*/, '');
+      elements.push(
+        <div key={i} style={{ fontSize: 12, fontWeight: 700, color: C.blue, textTransform: 'uppercase', letterSpacing: '0.06em', marginTop: 10, marginBottom: 4 }}>{label}</div>
+      );
+      i++; continue;
+    }
+
+    // Bullet line: "• Thu 24 Sep: 8h (397.9 → 405.4)" or "• NO WORK"
+    if (trim.startsWith('•')) {
+      const isNoWork = trim.includes('NO WORK');
+      const parts = trim.replace('• ', '').split(': ');
+      const dayPart = parts[0] || '';
+      const rest = parts.slice(1).join(': ');
+      elements.push(
+        <div key={i} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '5px 10px', borderRadius: 6, marginBottom: 3, background: C.bg }}>
+          <span style={{ fontSize: 13, color: C.muted, minWidth: 90 }}>{dayPart}</span>
+          <span style={{ fontSize: 13, fontWeight: 600, color: isNoWork ? C.red : C.text }}>{rest || 'NO WORK'}</span>
+        </div>
+      );
+      i++; continue;
+    }
+
+    // Total lines: "Total Day Shift: 35h" / "Combined Week Total: 77h"
+    if (/^Total|^Combined/i.test(trim)) {
+      const [label, val] = trim.split(': ');
+      elements.push(
+        <div key={i} style={{ display: 'flex', justifyContent: 'space-between', padding: '6px 10px', borderRadius: 6, background: C.blue + '14', marginBottom: 6, marginTop: 2 }}>
+          <span style={{ fontSize: 13, fontWeight: 600, color: C.text }}>{label}</span>
+          <span style={{ fontSize: 14, fontWeight: 700, color: C.blue }}>{val}</span>
+        </div>
+      );
+      i++; continue;
+    }
+
+    // Divider
+    if (trim === '---') {
+      elements.push(<hr key={i} style={{ border: 'none', borderTop: '1px solid ' + C.border, margin: '12px 0' }} />);
+      i++; continue;
+    }
+
+    // Date line in daily report: "Mon, 23 Sep 2024"
+    if (/^(Mon|Tue|Wed|Thu|Fri|Sat|Sun),/.test(trim)) {
+      elements.push(
+        <div key={i} style={{ fontSize: 13, fontWeight: 700, color: C.text, marginTop: 10, marginBottom: 4, borderLeft: '3px solid ' + C.blue, paddingLeft: 8 }}>{trim}</div>
+      );
+      i++; continue;
+    }
+
+    // Shift detail line: "  Day Shift: ..."
+    if (/^\s*(Day Shift|Night Shift):/.test(line)) {
+      const parts = trim.split('|');
+      elements.push(
+        <div key={i} style={{ display: 'flex', flexWrap: 'wrap', gap: 8, padding: '4px 8px 4px 12px', marginBottom: 3 }}>
+          {parts.map((p, pi) => {
+            const [k, v] = p.trim().split(':');
+            const isBilled = k && k.trim() === 'Billed';
+            return (
+              <span key={pi} style={{ fontSize: 12, color: isBilled ? C.green : C.muted }}>
+                <strong style={{ color: isBilled ? C.green : C.text }}>{k ? k.trim() : ''}</strong>
+                {v ? ': ' + v.trim() : ''}
+              </span>
+            );
+          })}
+        </div>
+      );
+      i++; continue;
+    }
+
+    // No Work line in daily
+    if (/No Work/i.test(trim) && trim.length > 0) {
+      elements.push(
+        <div key={i} style={{ fontSize: 12, color: C.red, padding: '4px 8px 4px 12px', marginBottom: 3 }}>{trim}</div>
+      );
+      i++; continue;
+    }
+
+    // Overall summary paragraph text
+    if (trim.length > 0) {
+      elements.push(
+        <p key={i} style={{ fontSize: 14, color: C.text, lineHeight: 1.65, margin: '4px 0' }}>{trim}</p>
+      );
+    }
+
+    i++;
+  }
+
+  return <div style={{ padding: '4px 0' }}>{elements}</div>;
+}
+
+// ─── Theme colours ────────────────────────────────────────────────────────────
+const DARK = {
   bg:      '#0f172a',
   surface: '#1e293b',
   border:  '#334155',
@@ -147,36 +271,71 @@ const C = {
   green:   '#22c55e',
   red:     '#ef4444',
   amber:   '#f59e0b',
+  badgeGreenBg:   '#14532d', badgeGreenText: '#86efac',
+  badgeRedBg:     '#7f1d1d', badgeRedText:   '#fca5a5',
+  badgeBlueBg:    '#1e3a5f', badgeBlueText:  '#93c5fd',
+  offlineBg:      '#160f00',
+};
+const LIGHT = {
+  bg:      '#f1f5f9',
+  surface: '#ffffff',
+  border:  '#e2e8f0',
+  text:    '#0f172a',
+  muted:   '#475569',
+  dim:     '#94a3b8',
+  blue:    '#2563eb',
+  green:   '#16a34a',
+  red:     '#dc2626',
+  amber:   '#d97706',
+  badgeGreenBg:   '#dcfce7', badgeGreenText: '#166534',
+  badgeRedBg:     '#fee2e2', badgeRedText:   '#991b1b',
+  badgeBlueBg:    '#dbeafe', badgeBlueText:  '#1e40af',
+  offlineBg:      '#fef9c3',
 };
 
-const S = {
-  app:   { minHeight: '100vh', background: C.bg, color: C.text, fontFamily: "'Inter', system-ui, sans-serif", paddingBottom: 88 },
-  hdr:   { background: C.surface, borderBottom: '1px solid ' + C.border, padding: '12px 16px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', position: 'sticky', top: 0, zIndex: 100 },
-  nav:   { position: 'fixed', bottom: 0, left: 0, right: 0, background: C.surface, borderTop: '1px solid ' + C.border, display: 'flex', zIndex: 100 },
-  page:  { padding: '0 16px 16px' },
-  card:  { background: C.surface, borderRadius: 12, padding: 16, marginBottom: 12, border: '1px solid ' + C.border },
-  row:   { display: 'flex', gap: 8 },
-  flex:  { display: 'flex', alignItems: 'center', justifyContent: 'space-between' },
-  label: { fontSize: 12, color: C.muted, marginBottom: 4, display: 'block' },
-  tag:   { fontSize: 11, color: C.dim },
-  input: { width: '100%', padding: '10px 12px', background: C.bg, border: '1px solid ' + C.border, borderRadius: 8, color: C.text, fontSize: 14, boxSizing: 'border-box', marginBottom: 10, fontFamily: 'inherit' },
-  btn: function(v) {
-    const bg = v === 'primary' ? C.blue : v === 'danger' ? C.red : v === 'success' ? C.green : C.border;
-    return { padding: '12px 16px', borderRadius: 8, border: 'none', cursor: 'pointer', fontWeight: 600, fontSize: 14, background: bg, color: '#fff', width: '100%', marginBottom: 8, fontFamily: 'inherit' };
-  },
-  navBtn: function(active) {
-    return { flex: 1, padding: '10px 4px 8px', background: 'none', border: 'none', color: active ? C.blue : C.dim, fontSize: 10, cursor: 'pointer', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 3, fontFamily: 'inherit' };
-  },
-  badge: function(color) {
-    const bg   = color === 'green' ? '#14532d' : color === 'red' ? '#7f1d1d' : '#1e3a5f';
-    const text = color === 'green' ? '#86efac' : color === 'red' ? '#fca5a5' : '#93c5fd';
-    return { display: 'inline-block', padding: '3px 9px', borderRadius: 99, fontSize: 11, fontWeight: 600, background: bg, color: text };
-  },
-  billedBox: { padding: '10px 12px', background: C.bg, border: '1px solid ' + C.border, borderRadius: 8, fontSize: 14, color: C.green, marginBottom: 10, textAlign: 'center' },
-};
+function makeStyles(C) {
+  return {
+    app:   { minHeight: '100vh', background: C.bg, color: C.text, fontFamily: "'Inter', system-ui, sans-serif", paddingBottom: 88 },
+    hdr:   { background: C.surface, borderBottom: '1px solid ' + C.border, padding: '12px 16px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', position: 'sticky', top: 0, zIndex: 100 },
+    nav:   { position: 'fixed', bottom: 0, left: 0, right: 0, background: C.surface, borderTop: '1px solid ' + C.border, display: 'flex', zIndex: 100 },
+    page:  { padding: '0 16px 16px' },
+    card:  { background: C.surface, borderRadius: 12, padding: 16, marginBottom: 12, border: '1px solid ' + C.border },
+    row:   { display: 'flex', gap: 8 },
+    flex:  { display: 'flex', alignItems: 'center', justifyContent: 'space-between' },
+    label: { fontSize: 12, color: C.muted, marginBottom: 4, display: 'block' },
+    tag:   { fontSize: 11, color: C.dim },
+    input: { width: '100%', padding: '10px 12px', background: C.bg, border: '1px solid ' + C.border, borderRadius: 8, color: C.text, fontSize: 14, boxSizing: 'border-box', marginBottom: 10, fontFamily: 'inherit' },
+    btn: function(v) {
+      const bg = v === 'primary' ? C.blue : v === 'danger' ? C.red : v === 'success' ? C.green : C.border;
+      return { padding: '12px 16px', borderRadius: 8, border: 'none', cursor: 'pointer', fontWeight: 600, fontSize: 14, background: bg, color: '#fff', width: '100%', marginBottom: 8, fontFamily: 'inherit' };
+    },
+    navBtn: function(active) {
+      return { flex: 1, padding: '10px 4px 8px', background: 'none', border: 'none', color: active ? C.blue : C.dim, fontSize: 10, cursor: 'pointer', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 3, fontFamily: 'inherit' };
+    },
+    badge: function(color) {
+      const bg   = color === 'green' ? C.badgeGreenBg  : color === 'red' ? C.badgeRedBg  : C.badgeBlueBg;
+      const text = color === 'green' ? C.badgeGreenText : color === 'red' ? C.badgeRedText : C.badgeBlueText;
+      return { display: 'inline-block', padding: '3px 9px', borderRadius: 99, fontSize: 11, fontWeight: 600, background: bg, color: text };
+    },
+    billedBox: { padding: '10px 12px', background: C.bg, border: '1px solid ' + C.border, borderRadius: 8, fontSize: 14, color: C.green, marginBottom: 10, textAlign: 'center' },
+  };
+}
 
 // ─── App ──────────────────────────────────────────────────────────────────────
 export default function App() {
+
+  // ── Theme
+  const [isDark, setIsDark] = useState(() => {
+    try { return localStorage.getItem('mht_theme') !== 'light'; } catch (_) { return true; }
+  });
+  const C = isDark ? DARK : LIGHT;
+  const S = makeStyles(C);
+
+  function toggleTheme() {
+    const next = !isDark;
+    setIsDark(next);
+    try { localStorage.setItem('mht_theme', next ? 'dark' : 'light'); } catch (_) {}
+  }
 
   // ── Core state
   const [view,      setView]      = useState('home');
@@ -406,7 +565,7 @@ export default function App() {
         </div>
 
         {offQ.length > 0 && (
-          <div style={{ ...S.card, borderColor: C.amber, background: '#160f00' }}>
+          <div style={{ ...S.card, borderColor: C.amber, background: C.offlineBg }}>
             <div style={S.flex}>
               <span style={{ color: C.amber, fontSize: 13 }}>📴 {offQ.length} entries pending sync</span>
               <button onClick={syncQueue} style={{ background: C.amber, border: 'none', borderRadius: 6, color: '#000', padding: '4px 12px', cursor: 'pointer', fontSize: 12, fontWeight: 600 }}>Sync</button>
@@ -560,7 +719,7 @@ export default function App() {
           </div>
         ))}
 
-        <div style={{ position: 'sticky', bottom: 88, paddingBottom: 8, background: C.bg }}>
+        <div style={{ position: 'sticky', bottom: 88, paddingBottom: 8, background: C.bg, borderTop: '1px solid ' + C.border, paddingTop: 8 }}>
           <button style={S.btn('success')} onClick={saveAllEntries}>✓ Save All Entries</button>
           <button style={S.btn()} onClick={() => setEStep(2)}>← Back</button>
         </div>
@@ -662,8 +821,8 @@ export default function App() {
 
         {rResult && (
           <>
-            <div style={{ ...S.card, fontFamily: "'Courier New', monospace", fontSize: 12, whiteSpace: 'pre-wrap', lineHeight: 1.7, maxHeight: 420, overflowY: 'auto', marginBottom: 10 }}>
-              {rResult}
+            <div style={{ ...S.card, maxHeight: 520, overflowY: 'auto', marginBottom: 10 }}>
+              <ReportView text={rResult} C={C} />
             </div>
             <div style={S.row}>
               <button style={{ ...S.btn('success'), marginBottom: 0, flex: 1 }} onClick={saveReport}>💾 Save</button>
@@ -685,8 +844,8 @@ export default function App() {
         <div style={{ fontSize: 12, color: C.muted, marginBottom: 14 }}>
           {fmtLong(viewingRpt.from)}{viewingRpt.from !== viewingRpt.to ? ' – ' + fmtLong(viewingRpt.to) : ''}
         </div>
-        <div style={{ ...S.card, fontFamily: "'Courier New', monospace", fontSize: 12, whiteSpace: 'pre-wrap', lineHeight: 1.7, maxHeight: 500, overflowY: 'auto' }}>
-          {viewingRpt.content}
+        <div style={{ ...S.card, maxHeight: 520, overflowY: 'auto' }}>
+          <ReportView text={viewingRpt.content} C={C} />
         </div>
         <button style={S.btn()} onClick={() => downloadTxt(viewingRpt.content, 'report-' + viewingRpt.from)}>⬇ Download</button>
         <button style={S.btn('danger')} onClick={() => {
@@ -784,6 +943,9 @@ export default function App() {
           <span style={{ fontSize: 11, color: isOnline ? C.green : C.amber }}>
             {isOnline ? '● Online' : '● Offline'}
           </span>
+          <button onClick={toggleTheme} title="Toggle theme" style={{ background: 'none', border: 'none', color: C.muted, cursor: 'pointer', fontSize: 18, lineHeight: 1 }}>
+            {isDark ? '☀️' : '🌙'}
+          </button>
           <button onClick={() => setView('settings')} style={{ background: 'none', border: 'none', color: C.muted, cursor: 'pointer', fontSize: 20, lineHeight: 1 }}>⚙</button>
         </div>
       </div>
