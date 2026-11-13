@@ -1,17 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
-import { auth, db } from './firebase';
-import {
-  createUserWithEmailAndPassword,
-  signInWithEmailAndPassword,
-  signOut,
-  onAuthStateChanged,
-  updateProfile
-} from 'firebase/auth';
-import {
-  collection, doc, setDoc, getDoc, getDocs,
-  deleteDoc, onSnapshot
-} from 'firebase/firestore';
- 
+import React, { useState, useEffect } from 'react';
 
 // ─── WhatsApp formatter ───────────────────────────────────────────────────────
 function formatForWhatsApp(text, machineName, dateLabel) {
@@ -256,22 +243,12 @@ export default function App() {
   const S = makeStyles(C);
   function toggleTheme() { const n=!isDark; setIsDark(n); try{localStorage.setItem('mht_theme',n?'dark':'light');}catch(_){} }
 
-  // ── Auth state
-  const [authUser,    setAuthUser]    = useState(null);
-  const [authLoading, setAuthLoading] = useState(true);
-  const [authMode,    setAuthMode]    = useState('login');
-  const [authName,    setAuthName]    = useState('');
-  const [authEmail,   setAuthEmail]   = useState('');
-  const [authPass,    setAuthPass]    = useState('');
-  const [authError,   setAuthError]   = useState('');
-  const [authBusy,    setAuthBusy]    = useState(false);
 
   // ── App state
   const [view,         setView]         = useState('home');
-  const [machines,     setMachines]     = useState([]);
-  const [entriesCache, setEntriesCache] = useState({});
-  const [reports,      setReports]      = useState([]);
-  const [isOnline,     setIsOnline]     = useState(navigator.onLine);
+  const [machines, setMachines] = useState(() => { try { return JSON.parse(localStorage.getItem('mht_machines') || '[]'); } catch (_) { return []; } });
+  const [entriesCache, setEntriesCache] = useState(() => { try { return JSON.parse(localStorage.getItem('mht_entries') || '{}'); } catch (_) { return {}; } });
+  const [reports, setReports] = useState(() => { try { return JSON.parse(localStorage.getItem('mht_reports') || '[]'); } catch (_) { return []; } });
   const [notif,        setNotif]        = useState({ enabled:false, dayTime:'06:00', nightTime:'18:00' });
 
   // ── Entry flow
@@ -307,135 +284,48 @@ export default function App() {
   const [viewingRpt, setViewingRpt] = useState(null);
   const [copied,     setCopied]     = useState(false);
 
-  // ── Online/offline
-  useEffect(() => {
-    const on=()=>setIsOnline(true), off=()=>setIsOnline(false);
-    window.addEventListener('online',on); window.addEventListener('offline',off);
-    return ()=>{ window.removeEventListener('online',on); window.removeEventListener('offline',off); };
-  },[]);
-
-  // ── Auth listener
-  useEffect(() => {
-    return onAuthStateChanged(auth, user => { setAuthUser(user); setAuthLoading(false); });
-  },[]);
-
-  // ── Machines real-time listener (per user)
-  useEffect(() => {
-    if (!authUser) { setMachines([]); return; }
-    const unsub = onSnapshot(collection(db,'users',authUser.uid,'machines'), snap => {
-      const list = snap.docs.map(d=>d.data()).sort((a,b)=>a.createdAt-b.createdAt);
-      setMachines(list);
-    });
-    return unsub;
-  },[authUser]);
+  // ── Save app data locally on this device
+  useEffect(() => { try { localStorage.setItem('mht_machines', JSON.stringify(machines)); } catch (_) {} }, [machines]);
+  useEffect(() => { try { localStorage.setItem('mht_entries', JSON.stringify(entriesCache)); } catch (_) {} }, [entriesCache]);
+  useEffect(() => { try { localStorage.setItem('mht_reports', JSON.stringify(reports)); } catch (_) {} }, [reports]);
 
   // ── Load notif from localStorage (device-specific)
   useEffect(() => {
     try { const n=localStorage.getItem('mht_notif'); if(n) setNotif(JSON.parse(n)); } catch(_){}
   },[]);
 
-  // ── Load today's entries when machines or user changes
-  useEffect(() => {
-    if (!authUser || machines.length===0) return;
-    loadEntriesForDates(machines.map(m=>m.id),[todayStr()]);
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  },[authUser, machines.length]);
-
-  // ─── Firebase helpers ───────────────────────────────────────────────────────
-
-  async function handleSignUp() {
-    if (!authName.trim())  { setAuthError('Enter your name.'); return; }
-    if (!authEmail.trim()) { setAuthError('Enter your email.'); return; }
-    if (authPass.length<6) { setAuthError('Password must be at least 6 characters.'); return; }
-    setAuthBusy(true); setAuthError('');
-    try {
-      const cred = await createUserWithEmailAndPassword(auth, authEmail.trim(), authPass);
-      await updateProfile(cred.user, { displayName: authName.trim() });
-    } catch(err) {
-      setAuthError(friendlyAuthError(err.code));
-    }
-    setAuthBusy(false);
-  }
-
-  async function handleSignIn() {
-    if (!authEmail.trim()) { setAuthError('Enter your email.'); return; }
-    if (!authPass)         { setAuthError('Enter your password.'); return; }
-    setAuthBusy(true); setAuthError('');
-    try {
-      await signInWithEmailAndPassword(auth, authEmail.trim(), authPass);
-    } catch(err) {
-      setAuthError(friendlyAuthError(err.code));
-    }
-    setAuthBusy(false);
-  }
-
-  function friendlyAuthError(code) {
-    if (code==='auth/user-not-found'||code==='auth/wrong-password'||code==='auth/invalid-credential') return 'Wrong email or password.';
-    if (code==='auth/email-already-in-use') return 'An account with this email already exists.';
-    if (code==='auth/invalid-email')        return 'That email address is not valid.';
-    if (code==='auth/too-many-requests')    return 'Too many attempts. Try again later.';
-    return 'Something went wrong. Please try again.';
-  }
-
-  async function handleSignOut() {
-    await signOut(auth);
-    setMachines([]); setEntriesCache({}); setReports([]); setView('home');
-  }
 
   // ── Entry cache helpers
   function getEntry(machineId, date) {
     return entriesCache[machineId+'_'+date] || { dayStart:'', dayEnd:'', nightStart:'', nightEnd:'', noWork:false, noWorkReason:'' };
   }
 
-  const loadEntriesForDates = useCallback(async (machineIds, dates) => {
-    if (!authUser) return;
-    const promises = [];
-    machineIds.forEach(mid => {
-      dates.forEach(date => {
-        const key = mid+'_'+date;
-        if (!entriesCache[key]) {
-          promises.push(getDoc(doc(db,'users',authUser.uid,'entries',key)).then(snap=>({ key, data:snap.exists()?snap.data():null })));
-        }
-      });
-    });
-    if (promises.length===0) return;
-    const results = await Promise.all(promises);
-    const updates = {};
-    results.forEach(r=>{ if(r.data) updates[r.key]=r.data; });
-    if (Object.keys(updates).length>0) setEntriesCache(prev=>({...prev,...updates}));
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  },[authUser]);
-
-  async function saveEntryDoc(machineId, date, entryData) {
+  async function loadEntriesForDates() {}
+  function saveEntryDoc(machineId, date, entryData) {
     const key = machineId+'_'+date;
     const entry = { ...entryData, machineId, date };
-    await setDoc(doc(db,'users',authUser.uid,'entries',key), entry);
     setEntriesCache(prev=>({...prev,[key]:entry}));
   }
 
   // ── Machine CRUD
-  async function addMachine() {
+  function addMachine() {
     if (!mForm.name.trim()) return;
     const m = { id:Date.now().toString(), name:mForm.name.trim(), startDay:mForm.startDay, breakingDay:mForm.breakingDay, active:true, createdAt:Date.now() };
-    await setDoc(doc(db,'users',authUser.uid,'machines',m.id), m);
+    setMachines(prev=>[...prev,m]);
     setMForm({ name:'', startDay:'', breakingDay:'' }); setShowMF(false);
   }
-
-  async function updateMachine() {
+  function updateMachine() {
     const updated = { ...mEdit, ...mForm };
-    await setDoc(doc(db,'users',authUser.uid,'machines',mEdit.id), updated);
+    setMachines(prev=>prev.map(m=>m.id===mEdit.id?updated:m));
     setMEdit(null); setShowMF(false); setMForm({ name:'', startDay:'', breakingDay:'' });
   }
-
-  async function deleteMachine(id) {
+  function deleteMachine(id) {
     if (!window.confirm('Delete this machine?')) return;
-    await deleteDoc(doc(db,'users',authUser.uid,'machines',id));
+    setMachines(prev=>prev.filter(m=>m.id!==id));
+    setEntriesCache(prev=>Object.fromEntries(Object.entries(prev).filter(([,entry])=>entry.machineId!==id)));
   }
-
-  async function toggleActive(id) {
-    const m = machines.find(m=>m.id===id);
-    if (!m) return;
-    await setDoc(doc(db,'users',authUser.uid,'machines',id),{...m,active:!m.active});
+  function toggleActive(id) {
+    setMachines(prev=>prev.map(m=>m.id===id?{...m,active:!m.active}:m));
   }
 
   // ── Entry flow
@@ -470,10 +360,10 @@ export default function App() {
 
   function updateDay(idx, field, value) { setEDays(prev=>{ const n=[...prev]; n[idx]={...n[idx],[field]:value}; return n; }); }
 
-  async function saveAllEntries() {
+  function saveAllEntries() {
     setESaving(true);
     try {
-      await Promise.all(eDays.map(day=>saveEntryDoc(eMachine.id, day.date, day)));
+      eDays.forEach(day=>saveEntryDoc(eMachine.id, day.date, day));
       alert('All entries saved!');
       setView('home');
     } catch(err) { alert('Error saving: '+err.message); }
@@ -481,12 +371,7 @@ export default function App() {
   }
 
   // ── Reports
-  async function loadReports() {
-    if (!authUser) return;
-    const snap = await getDocs(collection(db,'users',authUser.uid,'reports'));
-    const list = snap.docs.map(d=>d.data()).sort((a,b)=>b.createdAt-a.createdAt);
-    setReports(list);
-  }
+  function loadReports() { setReports(prev=>[...prev].sort((a,b)=>b.createdAt-a.createdAt)); }
 
   async function runReport() {
     if (!rMachine) { setRError('Please select a machine.'); return; }
@@ -510,14 +395,12 @@ export default function App() {
     if (!rResult) return;
     const id = Date.now().toString();
     const rpt = { id, machineId:rMachine, machineName:machines.find(m=>m.id===rMachine)?.name||'', type:rType, from:rType==='daily'?rFrom:rFrom, to:rType==='daily'?rFrom:rTo, content:rResult, nightStart:rNightStart, createdAt:Date.now() };
-    await setDoc(doc(db,'users',authUser.uid,'reports',id), rpt);
     setReports(prev=>[rpt,...prev]);
     alert('Report saved to History!');
   }
 
   async function deleteReport(rpt) {
     if (!window.confirm('Delete this report?')) return;
-    await deleteDoc(doc(db,'users',authUser.uid,'reports',rpt.id));
     setReports(prev=>prev.filter(r=>r.id!==rpt.id));
     setViewingRpt(null);
   }
@@ -540,62 +423,11 @@ export default function App() {
     return { totalHrs, working, noWork, pending };
   }
 
-  // ─── Render: Auth screen ────────────────────────────────────────────────────
-  function renderAuth() {
-    return (
-      <div style={{ minHeight:'100vh', background:C.bg, display:'flex', flexDirection:'column', alignItems:'center', justifyContent:'center', padding:'24px 24px' }}>
-        <div style={{ marginBottom:24, textAlign:'center' }}>
-          <div style={{ fontSize:36 }}>🚧</div>
-          <div style={{ fontSize:22, fontWeight:800, color:C.text, marginTop:8 }}>Machine Hours Tracker</div>
-          <div style={{ fontSize:13, color:C.muted, marginTop:4 }}>Sign in to access your data on any device</div>
-        </div>
-
-        <div style={{ width:'100%', maxWidth:400 }}>
-          {/* Tab switcher */}
-          <div style={{ display:'flex', background:C.surface, borderRadius:10, padding:4, marginBottom:20, border:'1px solid '+C.border }}>
-            {['login','register'].map(mode=>(
-              <button key={mode} onClick={()=>{setAuthMode(mode);setAuthError('');}} style={{ flex:1, padding:'9px 0', borderRadius:8, border:'none', cursor:'pointer', fontWeight:600, fontSize:14, fontFamily:'inherit', background:authMode===mode?C.blue:'transparent', color:authMode===mode?'#fff':C.muted, transition:'all 0.15s' }}>
-                {mode==='login'?'Sign In':'Create Account'}
-              </button>
-            ))}
-          </div>
-
-          <div style={S.card}>
-            {authMode==='register' && (
-              <>
-                <label style={S.label}>Your Name</label>
-                <input style={S.input} placeholder="e.g. Kwame Asante" value={authName} onChange={e=>setAuthName(e.target.value)} />
-              </>
-            )}
-            <label style={S.label}>Email Address</label>
-            <input style={S.input} type="email" placeholder="you@example.com" value={authEmail} onChange={e=>setAuthEmail(e.target.value)} />
-            <label style={S.label}>Password</label>
-            <input style={S.input} type="password" placeholder={authMode==='register'?'At least 6 characters':'Your password'} value={authPass} onChange={e=>setAuthPass(e.target.value)}
-              onKeyDown={e=>{ if(e.key==='Enter') authMode==='login'?handleSignIn():handleSignUp(); }} />
-
-            {authError && <div style={{ color:C.red, fontSize:13, marginBottom:10, padding:'8px 10px', background:C.red+'14', borderRadius:6 }}>⚠ {authError}</div>}
-
-            <button style={{ ...S.btn('primary'), marginBottom:0 }} onClick={authMode==='login'?handleSignIn:handleSignUp} disabled={authBusy}>
-              {authBusy ? (authMode==='login'?'Signing in…':'Creating account…') : (authMode==='login'?'Sign In':'Create Account')}
-            </button>
-          </div>
-
-          <div style={{ textAlign:'center', fontSize:13, color:C.muted, marginTop:12 }}>
-            {authMode==='login' ? "Don't have an account? " : 'Already have an account? '}
-            <button onClick={()=>{setAuthMode(authMode==='login'?'register':'login');setAuthError('');}} style={{ background:'none', border:'none', color:C.blue, cursor:'pointer', fontSize:13, fontFamily:'inherit', fontWeight:600 }}>
-              {authMode==='login'?'Create one':'Sign in'}
-            </button>
-          </div>
-        </div>
-      </div>
-    );
-  }
-
   // ─── Render: Home ───────────────────────────────────────────────────────────
   function renderHome() {
     const h=new Date().getHours();
     const greet=h<12?'Good morning':h<17?'Good afternoon':'Good evening';
-    const name = authUser?.displayName || '';
+    const name = '';
     const sum  = getHomeSummary();
     return (
       <div style={S.page}>
@@ -907,14 +739,6 @@ export default function App() {
       <div style={S.page}>
         <div style={{ padding:'16px 0 8px', fontSize:16, fontWeight:700 }}>Settings</div>
 
-        {/* Account card */}
-        <div style={S.card}>
-          <div style={{ fontWeight:600, marginBottom:10 }}>👤 Account</div>
-          <div style={{ fontSize:14, color:C.text, marginBottom:2 }}>{authUser?.displayName || 'User'}</div>
-          <div style={{ fontSize:12, color:C.muted, marginBottom:12 }}>{authUser?.email}</div>
-          <button style={{ ...S.btn('danger'), marginBottom:0 }} onClick={handleSignOut}>Sign Out</button>
-        </div>
-
         <div style={S.card}>
           <div style={{ fontWeight:600, marginBottom:12 }}>🔔 Shift Reminders</div>
           <div style={S.flex}>
@@ -934,8 +758,7 @@ export default function App() {
         <div style={S.card}>
           <div style={{ fontWeight:600, marginBottom:6 }}>ℹ About</div>
           <div style={{ fontSize:13, color:C.muted }}>Machine Hours Tracker v2.1</div>
-          <div style={{ fontSize:12, color:C.dim, marginTop:2 }}>6-day week · Cross-device sync via Firebase</div>
-          <div style={{ fontSize:12, color:isOnline?C.green:C.amber, marginTop:6 }}>{isOnline?'🌐 Online':'📴 Offline — changes will sync when back online'}</div>
+          <div style={{ fontSize:12, color:C.dim, marginTop:2 }}>6-day week · Data saved on this device</div>
         </div>
       </div>
     );
@@ -945,45 +768,26 @@ export default function App() {
   const NAV = [{ id:'home', icon:'🏠', label:'Home' },{ id:'entry', icon:'✏️', label:'Entry' },{ id:'machines', icon:'⚙', label:'Machines' },{ id:'reports', icon:'📊', label:'Reports' },{ id:'history', icon:'🕓', label:'History' }];
   const TITLES = { home:'MHT', entry:'New Entry', machines:'Machines', reports:'Reports', history:'History', settings:'Settings' };
 
-  if (authLoading) return (
-    <div style={{ minHeight:'100vh', background:C.bg, display:'flex', alignItems:'center', justifyContent:'center', flexDirection:'column', gap:12 }}>
-      <div style={{ fontSize:32 }}>🚧</div>
-      <div style={{ color:C.muted, fontSize:14 }}>Loading…</div>
-    </div>
-  );
-
-  if (!authUser) return (
-    <div style={{ background:C.bg, minHeight:'100vh' }}>
-      <div style={{ position:'fixed', top:16, right:16, zIndex:200 }}>
-        <button onClick={toggleTheme} style={{ background:C.surface, border:'1px solid '+C.border, borderRadius:8, color:C.muted, cursor:'pointer', fontSize:18, padding:'6px 10px' }}>{isDark?'☀️':'🌙'}</button>
-      </div>
-      {renderAuth()}
-    </div>
-  );
 
   return (
     <div style={S.app}>
       <div style={S.hdr}>
         <span style={{ fontSize:15, fontWeight:700, color:C.text }}>{TITLES[view]||'MHT'}</span>
         <div style={{ display:'flex', gap:14, alignItems:'center' }}>
-          <span style={{ fontSize:11, color:isOnline?C.green:C.amber }}>{isOnline?'● Online':'● Offline'}</span>
           <button onClick={toggleTheme} style={{ background:'none', border:'none', color:C.muted, cursor:'pointer', fontSize:18, lineHeight:1 }}>{isDark?'☀️':'🌙'}</button>
           <button onClick={()=>setView('settings')} style={{ background:'none', border:'none', color:C.muted, cursor:'pointer', fontSize:20, lineHeight:1 }}>⚙</button>
         </div>
       </div>
-
       {view==='home'     && renderHome()}
       {view==='entry'    && renderEntry()}
       {view==='machines' && renderMachines()}
       {view==='reports'  && renderReports()}
       {view==='history'  && renderHistory()}
       {view==='settings' && renderSettings()}
-
       <nav style={S.nav}>
         {NAV.map(n=>(
           <button key={n.id} style={S.navBtn(view===n.id)} onClick={()=>n.id==='entry'?startEntry():( n.id==='history'?(loadReports(),setView('history')):setView(n.id) )}>
-            <span style={{ fontSize:20 }}>{n.icon}</span>
-            <span>{n.label}</span>
+            <span style={{ fontSize:20 }}>{n.icon}</span><span>{n.label}</span>
           </button>
         ))}
       </nav>
