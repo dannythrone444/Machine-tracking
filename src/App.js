@@ -1,5 +1,17 @@
 import React, { useState, useEffect, useCallback } from 'react';
-
+import { auth, db } from './firebase';
+import {
+  createUserWithEmailAndPassword,
+  signInWithEmailAndPassword,
+  signOut,
+  onAuthStateChanged,
+  updateProfile
+} from 'firebase/auth';
+import {
+  collection, doc, setDoc, getDoc, getDocs,
+  deleteDoc, onSnapshot
+} from 'firebase/firestore';
+ 
 
 // ─── WhatsApp formatter ───────────────────────────────────────────────────────
 function formatForWhatsApp(text, machineName, dateLabel) {
